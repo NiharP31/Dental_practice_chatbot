@@ -1,0 +1,287 @@
+"""Everything the agent can do to patient data. Plain typed functions; each one validates its own
+inputs, enforces identity checks, and owns its transaction. Errors raise ToolError(code, message)
+for the agent loop to hand back to the model."""
+import re
+from datetime import date, datetime, time, timedelta
+from itertools import pairwise
+
+from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session
+
+from app import config
+from app.dates import ToolError, UnclearDate, Window, fmt_slot, resolve_when
+from app.db import Appointment, Conversation, IdempotencyKey, Patient, Slot, StaffAlert
+
+__all__ = ["ToolError", "UnclearDate", "verify_patient", "register_patient", "find_slots", "book",
+           "modify", "notify_staff", "get_conversation"]
+
+MAX_OPTIONS = 3
+MAX_VERIFY_FAILURES = 3
+DOB_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%B %d %Y", "%b %d %Y", "%d %B %Y")
+NO_INSURANCE = {"none", "no", "no insurance", "uninsured", "self pay", "self-pay", "n/a", "na", "nope"}
+
+
+# --- session state ------------------------------------------------------------------------
+
+def get_conversation(db: Session, session_id: str) -> Conversation:
+    conv = db.get(Conversation, session_id)
+    if conv is None:
+        conv = Conversation(session_id=session_id, messages=[], state={})
+        db.add(conv)
+        db.flush()
+    return conv
+
+
+def _set_state(conv: Conversation, **changes) -> None:
+    conv.state = {**(conv.state or {}), **changes}  # reassign so SQLAlchemy sees the JSON change
+
+
+def _verified_ids(conv: Conversation) -> set[int]:
+    return set((conv.state or {}).get("verified", []))
+
+
+def _mark_verified(conv: Conversation, patient_id: int) -> None:
+    _set_state(conv, verified=sorted(_verified_ids(conv) | {patient_id}))
+
+
+# --- parsing helpers ----------------------------------------------------------------------
+
+def _clean_name(name: str) -> str:
+    return " ".join(name.split()).title()
+
+
+def _parse_dob(raw: str) -> date:
+    s = " ".join(raw.replace(",", " ").split())
+    for fmt in DOB_FORMATS:
+        try:
+            dob = datetime.strptime(s, fmt).date()
+            break
+        except ValueError:
+            continue
+    else:
+        raise ToolError("bad_dob", "Date of birth not understood. Ask for it as month, day and year.")
+    today = config.office_now().date()
+    if dob > today or dob.year < today.year - 120:
+        raise ToolError("bad_dob", "That date of birth isn't plausible. Ask the patient to repeat it.")
+    return dob
+
+
+def _upcoming(db: Session, patient_id: int, now: datetime) -> list[dict]:
+    rows = db.execute(
+        select(Appointment, Slot).join(Slot, Slot.id == Appointment.slot_id)
+        .where(Appointment.patient_id == patient_id, Appointment.status == "booked", Slot.start >= now)
+        .order_by(Slot.start)).all()
+    return [{"appointment_id": a.id, "type": a.appt_type, "when": fmt_slot(s.start)} for a, s in rows]
+
+
+# --- tools --------------------------------------------------------------------------------
+
+def verify_patient(db: Session, session_id: str, full_name: str, dob: str, now: datetime | None = None) -> dict:
+    """Existing patient: name + date of birth must both match before anything is revealed or changed."""
+    now = now or config.office_now()
+    conv = get_conversation(db, session_id)
+    failures = (conv.state or {}).get("verify_failures", 0)
+    if failures >= MAX_VERIFY_FAILURES:
+        raise ToolError("verify_locked", f"Too many failed attempts. Offer a staff callback or {config.OFFICE_PHONE}.")
+    d = _parse_dob(dob)
+    patient = db.scalar(select(Patient).where(
+        func.lower(Patient.full_name) == _clean_name(full_name).lower(), Patient.dob == d))
+    if patient is None:
+        _set_state(conv, verify_failures=failures + 1)
+        db.commit()
+        # Same answer whether the name exists or not: don't leak who is a patient.
+        return {"verified": False, "message": "No patient matches that name and date of birth."}
+    _mark_verified(conv, patient.id)
+    db.commit()
+    return {"verified": True, "patient_id": patient.id, "full_name": patient.full_name,
+            "insurance": patient.insurance, "upcoming": _upcoming(db, patient.id, now)}
+
+
+def register_patient(db: Session, session_id: str, full_name: str, phone: str, dob: str, insurance: str) -> dict:
+    """New patient. insurance is the plan name, or "none" for self-pay."""
+    name = _clean_name(full_name)
+    if len(name.split()) < 2:
+        raise ToolError("bad_name", "Need the patient's full first and last name.")
+    digits = re.sub(r"\D", "", phone)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        raise ToolError("bad_phone", "Phone number should be 10 digits. Ask the patient to repeat it.")
+    d = _parse_dob(dob)
+    ins = " ".join(insurance.split())
+    if not ins:
+        raise ToolError("bad_insurance", 'Ask for the insurance name, or "none" if uninsured.')
+    if ins.lower() in NO_INSURANCE:
+        ins = "none"
+
+    conv = get_conversation(db, session_id)
+    existing = db.scalar(select(Patient).where(func.lower(Patient.full_name) == name.lower(), Patient.dob == d))
+    if existing:
+        # Name + DOB is our identity check, so this person is effectively verified.
+        _mark_verified(conv, existing.id)
+        db.commit()
+        return {"patient_id": existing.id, "full_name": existing.full_name, "already_registered": True}
+    patient = Patient(full_name=name, phone=digits, dob=d, insurance=ins)
+    db.add(patient)
+    db.flush()
+    _mark_verified(conv, patient.id)
+    db.commit()
+    return {"patient_id": patient.id, "full_name": name, "insurance": ins, "registered": True}
+
+
+def find_slots(db: Session, appt_type: str, when: str, count: int = 1,
+               exclude_slot_ids: list[int] | None = None, now: datetime | None = None) -> dict:
+    """Up to 3 open options in the window the patient described. count>1 = back-to-back run
+    (family). Options are spread across different days/times rather than 3 adjacent slots."""
+    if appt_type not in config.APPT_TYPES:
+        raise ToolError("bad_type", f"appt_type must be one of {', '.join(config.APPT_TYPES)}.")
+    if not 1 <= count <= 6:
+        raise ToolError("bad_count", "count must be between 1 and 6.")
+    now = now or config.office_now()
+    w = resolve_when(when, now)
+    exclude = set(exclude_slot_ids or [])
+
+    runs = _open_runs(db, w, count, now, exclude)
+    picked: list[list[Slot]] = []
+    for ok in (lambda r: r[0].start.date() not in {p[0].start.date() for p in picked},  # new day
+               lambda r: all(abs(r[0].start - p[0].start) >= timedelta(hours=2) for p in picked),
+               lambda r: all(not set(r) & set(p) for p in picked)):  # at least non-overlapping
+        for r in runs:
+            if len(picked) < MAX_OPTIONS and r not in picked and ok(r):
+                picked.append(r)
+    picked.sort(key=lambda r: r[0].start)
+
+    result = {"searched": w.describe(), "options": [
+        {"slot_ids": [s.id for s in r], "when": fmt_slot(r[0].start),
+         **({"times": [fmt_slot(s.start).split(" at ")[1] for s in r]} if count > 1 else {})}
+        for r in picked]}
+    if not picked:
+        later = _open_runs(db, Window(w.last + timedelta(days=1), w.last + timedelta(days=60)), count, now, exclude)
+        result["message"] = "No openings in that window."
+        if later:
+            result["next_available"] = {"slot_ids": [s.id for s in later[0]], "when": fmt_slot(later[0][0].start)}
+    return result
+
+
+def _open_runs(db: Session, w: Window, count: int, now: datetime, exclude: set[int]) -> list[list[Slot]]:
+    slots = db.scalars(select(Slot).where(
+        Slot.status == "open", Slot.start > now,
+        Slot.start >= datetime.combine(w.first, time()),
+        Slot.start < datetime.combine(w.last + timedelta(days=1), time()),
+    ).order_by(Slot.start)).all()
+    slots = [s for s in slots if w.contains(s.start) and s.id not in exclude]
+    runs = [slots[i:i + count] for i in range(len(slots) - count + 1)]
+    return [r for r in runs if all(b.start - a.start == config.SLOT_LEN for a, b in pairwise(r))]
+
+
+def book(db: Session, session_id: str, turn: int, patient_ids: list[int], slot_ids: list[int],
+         appt_type: str, notes: str = "", now: datetime | None = None) -> dict:
+    """Book one or more patients (patient_ids[i] -> slot_ids[i]) in one all-or-nothing transaction."""
+    key = f"{session_id}:{turn}"
+    if prior := db.get(IdempotencyKey, key):
+        return {**prior.result, "replayed": True}
+    now = now or config.office_now()
+    if appt_type not in config.APPT_TYPES:
+        raise ToolError("bad_type", f"appt_type must be one of {', '.join(config.APPT_TYPES)}.")
+    if not patient_ids or len(patient_ids) != len(slot_ids):
+        raise ToolError("bad_args", "Give exactly one slot_id per patient_id.")
+    if len(set(slot_ids)) != len(slot_ids) or len(set(patient_ids)) != len(patient_ids):
+        raise ToolError("bad_args", "Each patient and each slot can appear only once.")
+    conv = get_conversation(db, session_id)
+    if not set(patient_ids) <= _verified_ids(conv):
+        raise ToolError("not_verified", "Every patient must be verified (name + DOB) or registered first.")
+
+    try:
+        booked = []
+        for pid, sid in zip(patient_ids, slot_ids):
+            slot = db.get(Slot, sid)
+            if slot is None or slot.start <= now:
+                raise ToolError("bad_slot", f"Slot {sid} isn't a bookable future time. Search again.")
+            claimed = db.execute(update(Slot).where(Slot.id == sid, Slot.status == "open")
+                                 .values(status="booked")).rowcount
+            if claimed == 0:
+                raise ToolError("slot_taken", "That time was just taken. Nothing was booked; offer other times.")
+            appt = Appointment(patient_id=pid, slot_id=sid, appt_type=appt_type, notes=notes[:1000])
+            db.add(appt)
+            db.flush()
+            booked.append({"appointment_id": appt.id, "patient": db.get(Patient, pid).full_name,
+                           "type": appt_type, "when": fmt_slot(slot.start)})
+        result = {"booked": True, "appointments": booked}
+        db.add(IdempotencyKey(key=key, result=result))
+        db.commit()
+        return result
+    except Exception:
+        db.rollback()
+        raise
+
+
+def modify(db: Session, session_id: str, turn: int, appointment_id: int, action: str,
+           new_slot_id: int | None = None, confirm: bool = False, now: datetime | None = None) -> dict:
+    """Reschedule or cancel. Two-phase: the first call returns details to read back; it only
+    executes when called again with confirm=True on a later turn (i.e. after the patient said yes)."""
+    now = now or config.office_now()
+    if action not in ("cancel", "reschedule"):
+        raise ToolError("bad_action", 'action must be "cancel" or "reschedule".')
+    conv = get_conversation(db, session_id)
+    appt = db.get(Appointment, appointment_id)
+    if appt is None or appt.patient_id not in _verified_ids(conv):
+        # Same error for "doesn't exist" and "not yours": don't leak appointment ids.
+        raise ToolError("not_verified", "Verify the patient's name and date of birth first.")
+
+    # Retries of an already-applied change succeed quietly.
+    if action == "cancel" and appt.status == "cancelled" or action == "reschedule" and appt.slot_id == new_slot_id:
+        return {"done": True, "action": action, "already_applied": True}
+
+    old = db.get(Slot, appt.slot_id)
+    if appt.status != "booked" or old.start <= now:
+        raise ToolError("not_modifiable", "That appointment is not upcoming, so it can't be changed here.")
+    who = db.get(Patient, appt.patient_id).full_name
+    if action == "cancel":
+        details = f"Cancel {who}'s {appt.appt_type} on {fmt_slot(old.start)}"
+    else:
+        if new_slot_id is None:
+            raise ToolError("bad_args", "Reschedule needs new_slot_id from find_slots.")
+        new = db.get(Slot, new_slot_id)
+        if new is None or new.start <= now or new.status != "open":
+            raise ToolError("slot_taken", "That new time isn't available. Search again.")
+        details = f"Move {who}'s {appt.appt_type} from {fmt_slot(old.start)} to {fmt_slot(new.start)}"
+
+    pending = {"appointment_id": appointment_id, "action": action, "new_slot_id": new_slot_id}
+    stored = (conv.state or {}).get("pending") or {}
+    same = {k: stored.get(k) for k in pending} == pending
+    asked_turn = stored["turn"] if same else turn  # re-asking the same change keeps the original turn
+    if not (confirm and same and asked_turn < turn):
+        _set_state(conv, pending={**pending, "turn": asked_turn})
+        db.commit()
+        return {"needs_confirmation": True, "details": details,
+                "instruction": "Read these details to the patient and ask for a clear yes. "
+                               "Call modify again with confirm=true only after they agree."}
+
+    try:
+        if action == "reschedule":
+            claimed = db.execute(update(Slot).where(Slot.id == new_slot_id, Slot.status == "open")
+                                 .values(status="booked")).rowcount
+            if claimed == 0:
+                raise ToolError("slot_taken", "That new time was just taken. Nothing changed; offer other times.")
+            appt.slot_id = new_slot_id
+        else:
+            appt.status = "cancelled"
+        old.status = "open"
+        _set_state(conv, pending=None)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {"done": True, "action": action, "details": details}
+
+
+def notify_staff(db: Session, session_id: str, priority: str, summary: str) -> dict:
+    """Write a staff alert. The DB row is the source of truth; Slack is best-effort on top."""
+    if priority not in ("urgent", "normal"):
+        raise ToolError("bad_priority", 'priority must be "urgent" or "normal".')
+    if not summary.strip():
+        raise ToolError("bad_summary", "Summarize what the staff need to know.")
+    alert = StaffAlert(session_id=session_id, priority=priority, summary=summary.strip()[:2000])
+    db.add(alert)
+    db.commit()
+    return {"alerted": True, "alert_id": alert.id, "priority": priority}
