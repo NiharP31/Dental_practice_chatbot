@@ -37,6 +37,8 @@ make eval                # scenario evals against the real LLM
 
 ## Architecture
 
+![Architecture](docs/architecture.svg)
+
 ```mermaid
 flowchart LR
   UI["Chat UI (static HTML/JS)"] -->|POST /chat| API[FastAPI]

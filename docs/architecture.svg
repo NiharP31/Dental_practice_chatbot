@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 670" width="1000" height="670" role="img" aria-labelledby="t d">
+<title id="t">Bright Smile Dental architecture</title>
+<desc id="d">Chat UI to FastAPI /chat to the agent loop, which asks the LLM chain (Claude Haiku, falling back to Gemini Flash-Lite, then a canned reply) which tool to call, runs typed tools against Postgres, and passes every reply through guardrails before it reaches the patient. Emergencies write staff_alerts, shown on /staff.</desc>
+<style>
+  .bg { fill: #ffffff; }
+  .box { fill: #f6f8fa; stroke: #8c959f; stroke-width: 1.5; }
+  .box.fb { stroke-dasharray: 5 4; fill: #ffffff; }
+  .hl { fill: #0a7a68; fill-opacity: .14; stroke: #0a7a68; stroke-width: 3; }
+  .t { font: 600 15px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #1f2328; }
+  .s { font: 12.5px ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; fill: #57606a; }
+  .lb { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #57606a; }
+  .e { fill: none; stroke: #8c959f; stroke-width: 1.6; }
+  .e.dash { stroke-dasharray: 5 4; }
+  .ah { fill: #8c959f; }
+  .dot { fill: #0a7a68; }
+  .dot2 { fill: #cf222e; }
+  .band { fill: #f7f5fb; stroke: #b4aac9; stroke-width: 1.2; stroke-dasharray: 6 5; }
+  .box.off { fill: #fbfaff; stroke: #8b7fb0; stroke-dasharray: 5 4; }
+  .hl.off { fill: #8250df; stroke: #8250df; }
+  .e.off { stroke: #8b7fb0; stroke-dasharray: 5 4; }
+  .ah.off { fill: #8b7fb0; }
+  .lb.off { fill: #6e5a9e; font-weight: 600; }
+  .dot3 { fill: #8250df; }
+  @media (prefers-color-scheme: dark) {
+    .band { fill: #15121d; stroke: #4f4766; }
+    .box.off { fill: #17141f; stroke: #8d82ad; }
+    .hl.off { fill: #b392f0; stroke: #b392f0; }
+    .e.off { stroke: #8d82ad; }
+    .ah.off { fill: #8d82ad; }
+    .lb.off { fill: #b9a9e3; }
+    .dot3 { fill: #b392f0; }
+    .bg { fill: #0d1117; }
+    .box { fill: #161b22; stroke: #6e7681; }
+    .box.fb { fill: #0d1117; }
+    .hl { fill: #3fd1b4; stroke: #3fd1b4; }
+    .t { fill: #e6edf3; }
+    .s, .lb { fill: #9198a1; }
+    .e { stroke: #6e7681; }
+    .ah { fill: #6e7681; }
+    .dot { fill: #3fd1b4; }
+    .dot2 { fill: #ff7b72; }
+  }
+  @media (prefers-reduced-motion: reduce) { .dot.moving, .dot2.moving, .dot3.moving, .hl { display: none; } }
+</style>
+<defs>
+  <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+  </marker>
+  <marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path class="ah off" d="M0,0 L10,5 L0,10 z"/>
+  </marker>
+  <path id="main" d="M75 190 L400 190 L400 55 L400 190 L895 190 L400 190 L400 340 L75 340 L75 190"/>
+  <path id="emerg" d="M640 200 L640 335 L830 335"/>
+  <path id="off" d="M40 236 L40 520 L905 520 L905 585 L8 585 L8 120 L230 120 L230 190"/>
+</defs>
+<rect class="bg" width="1000" height="670" rx="12"/>
+<rect class="band" x="16" y="445" width="968" height="157" rx="10"/>
+<path class="e" d="M130 190 H156" marker-end="url(#a)"/>
+<path class="e" d="M300 190 H326" marker-end="url(#a)"/>
+<path class="e" d="M470 190 H506" marker-end="url(#a)" marker-start="url(#a)"/>
+<path class="e" d="M770 200 H806" marker-end="url(#a)" marker-start="url(#a)"/>
+<path class="e" d="M400 150 V94" marker-end="url(#a)" marker-start="url(#a)"/>
+<path class="e dash" d="M560 46 H596" marker-end="url(#a)"/>
+<path class="e dash" d="M760 46 H796" marker-end="url(#a)"/>
+<path class="e" d="M400 230 V296" marker-end="url(#a)"/>
+<path class="e" d="M330 340 H75 V234" marker-end="url(#a)"/>
+<path class="e" d="M640 250 V296" marker-end="url(#a)"/>
+<path class="e" d="M720 335 H756" marker-end="url(#a)"/>
+<path class="e off" d="M40 230 V481" marker-end="url(#ao)"/>
+<path class="e off" d="M150 520 H172" marker-end="url(#ao)"/>
+<path class="e off" d="M306 520 H328" marker-end="url(#ao)"/>
+<path class="e off" d="M462 520 H484" marker-end="url(#ao)"/>
+<path class="e off" d="M638 520 H660" marker-end="url(#ao)"/>
+<path class="e off" d="M804 520 H826" marker-end="url(#ao)"/>
+<path class="e off" d="M905 555 V585 H8 V120 H230 V146" marker-end="url(#ao)"/>
+<path class="e off" d="M540 485 V280 H450 V234" marker-end="url(#ao)"/>
+<text class="lb" x="600" y="16" text-anchor="start">fallback if Claude fails or is over budget</text>
+<text class="lb" x="84" y="296" text-anchor="start">reply</text>
+<text class="lb" x="648" y="280" text-anchor="start">emergency</text>
+<text class="lb" x="392" y="270" text-anchor="end">check reply</text>
+<text class="lb" x="548" y="420" text-anchor="start">same agent, test DB</text>
+<text class="lb off" x="978" y="470" text-anchor="end">Offline: evals &amp; CI</text>
+<text class="lb" x="420" y="579" text-anchor="start">redeploy → back to FastAPI</text>
+<rect class="box " x="20" y="150" width="110" height="80" rx="10"/>
+<rect class="hl" x="20" y="150" width="110" height="80" rx="10" opacity="0"><animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.0249;0.0349;0.9744;0.9824;0.9999;1" values="1;1;0;0;1;1;1"/></rect>
+<rect class="box " x="160" y="150" width="140" height="80" rx="10"/>
+<rect class="hl" x="160" y="150" width="140" height="80" rx="10" opacity="0"><animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.0309;0.0389;0.1018;0.1118;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box " x="330" y="150" width="140" height="80" rx="10"/>
+<rect class="hl" x="330" y="150" width="140" height="80" rx="10" opacity="0"><animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.1078;0.1158;0.1652;0.1752;0.2436;0.2516;0.3009;0.3109;0.678;0.686;0.7353;0.7453;1" values="0;0;1;1;0;0;1;1;0;0;1;1;0;0"/></rect>
+<rect class="box " x="510" y="150" width="260" height="100" rx="10"/>
+<rect class="hl" x="510" y="150" width="260" height="100" rx="10" opacity="0"><animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.3115;0.3195;0.4367;0.4467;0.5422;0.5502;0.6674;0.6774;1" values="0;0;1;1;0;0;1;1;0;0"/></rect>
+<rect class="box " x="810" y="150" width="170" height="100" rx="10"/>
+<rect class="hl" x="810" y="150" width="170" height="100" rx="10" opacity="0"><animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.4472;0.4552;0.5317;0.5417;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box " x="330" y="20" width="230" height="70" rx="10"/>
+<rect class="hl" x="330" y="20" width="230" height="70" rx="10" opacity="0"><animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.1848;0.1928;0.224;0.234;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box fb" x="600" y="26" width="160" height="40" rx="10"/>
+<rect class="box fb" x="800" y="26" width="180" height="40" rx="10"/>
+<rect class="box " x="330" y="300" width="190" height="80" rx="10"/>
+<rect class="hl" x="330" y="300" width="190" height="80" rx="10" opacity="0"><animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.7594;0.7674;0.8167;0.8267;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box " x="560" y="300" width="160" height="70" rx="10"/>
+<rect class="hl" x="560" y="300" width="160" height="70" rx="10" opacity="0"><animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.4226;0.4306;0.4903;0.5003;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box " x="760" y="300" width="140" height="70" rx="10"/>
+<rect class="hl" x="760" y="300" width="140" height="70" rx="10" opacity="0"><animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.5037;0.5117;0.5478;0.5578;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box off" x="20" y="485" width="130" height="70" rx="10"/>
+<rect class="hl off" x="20" y="485" width="130" height="70" rx="10" opacity="0"><animate attributeName="opacity" dur="14s" begin="2s" repeatCount="indefinite" keyTimes="0;0.0792;0.0872;0.1374;0.1474;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box off" x="176" y="485" width="130" height="70" rx="10"/>
+<rect class="hl off" x="176" y="485" width="130" height="70" rx="10" opacity="0"><animate attributeName="opacity" dur="14s" begin="2s" repeatCount="indefinite" keyTimes="0;0.1388;0.1468;0.1918;0.2018;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box off" x="332" y="485" width="130" height="70" rx="10"/>
+<rect class="hl off" x="332" y="485" width="130" height="70" rx="10" opacity="0"><animate attributeName="opacity" dur="14s" begin="2s" repeatCount="indefinite" keyTimes="0;0.1932;0.2012;0.2462;0.2562;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box off" x="488" y="485" width="150" height="70" rx="10"/>
+<rect class="hl off" x="488" y="485" width="150" height="70" rx="10" opacity="0"><animate attributeName="opacity" dur="14s" begin="2s" repeatCount="indefinite" keyTimes="0;0.2476;0.2556;0.3075;0.3175;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box off" x="664" y="485" width="140" height="70" rx="10"/>
+<rect class="hl off" x="664" y="485" width="140" height="70" rx="10" opacity="0"><animate attributeName="opacity" dur="14s" begin="2s" repeatCount="indefinite" keyTimes="0;0.3089;0.3169;0.3654;0.3754;1" values="0;0;1;1;0;0"/></rect>
+<rect class="box off" x="830" y="485" width="150" height="70" rx="10"/>
+<rect class="hl off" x="830" y="485" width="150" height="70" rx="10" opacity="0"><animate attributeName="opacity" dur="14s" begin="2s" repeatCount="indefinite" keyTimes="0;0.3668;0.3748;0.4128;0.4228;1" values="0;0;1;1;0;0"/></rect>
+<circle class="dot moving" r="7"><animateMotion dur="10s" repeatCount="indefinite" calcMode="linear"><mpath href="#main"/></animateMotion></circle>
+<circle class="dot3 moving" r="7" opacity="0">
+  <animateMotion dur="14s" begin="2s" repeatCount="indefinite" calcMode="linear"><mpath href="#off"/></animateMotion>
+  <animate attributeName="opacity" dur="14s" begin="2s" repeatCount="indefinite" keyTimes="0;0.02;0.97;1" values="0;1;1;0"/>
+</circle>
+<circle class="dot2 moving" r="7" opacity="0">
+  <animateMotion dur="10s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1" keyTimes="0;0.3778;0.5478;1"><mpath href="#emerg"/></animateMotion>
+  <animate attributeName="opacity" dur="10s" repeatCount="indefinite" keyTimes="0;0.3768;0.3778;0.5678;0.5688;1" values="0;0;1;1;0;0"/>
+</circle>
+<text class="t" x="75.0" y="187.5" text-anchor="middle">Chat UI</text>
+<text class="s" x="75.0" y="205.5" text-anchor="middle">static HTML/JS</text>
+<text class="t" x="230.0" y="179.0" text-anchor="middle">FastAPI /chat</text>
+<text class="s" x="230.0" y="197.0" text-anchor="middle">rate limit</text>
+<text class="s" x="230.0" y="213.0" text-anchor="middle">session state</text>
+<text class="t" x="400.0" y="179.0" text-anchor="middle">Agent loop</text>
+<text class="s" x="400.0" y="197.0" text-anchor="middle">app/agent.py</text>
+<text class="s" x="400.0" y="213.0" text-anchor="middle">≤ 6 tool rounds</text>
+<text class="t" x="640.0" y="180.5" text-anchor="middle">Tools · app/tools.py</text>
+<text class="s" x="640.0" y="198.5" text-anchor="middle">verify_patient · register_patient</text>
+<text class="s" x="640.0" y="214.5" text-anchor="middle">find_slots · book · modify</text>
+<text class="s" x="640.0" y="230.5" text-anchor="middle">triage_emergency · notify_staff</text>
+<text class="t" x="895.0" y="189.0" text-anchor="middle">Postgres</text>
+<text class="s" x="895.0" y="207.0" text-anchor="middle">Supabase (prod)</text>
+<text class="s" x="895.0" y="223.0" text-anchor="middle">SQLite (local)</text>
+<text class="t" x="445.0" y="52.5" text-anchor="middle">LLM chain · app/llm.py</text>
+<text class="s" x="445.0" y="70.5" text-anchor="middle">Claude Haiku (primary)</text>
+<text class="t" x="680.0" y="51.0" text-anchor="middle">Gemini Flash-Lite</text>
+<text class="t" x="890.0" y="51.0" text-anchor="middle">canned reply + phone</text>
+<text class="t" x="425.0" y="329.0" text-anchor="middle">Guardrails</text>
+<text class="s" x="425.0" y="347.0" text-anchor="middle">unbacked claims</text>
+<text class="s" x="425.0" y="363.0" text-anchor="middle">red flags → 911</text>
+<text class="t" x="640.0" y="332.5" text-anchor="middle">staff_alerts</text>
+<text class="s" x="640.0" y="350.5" text-anchor="middle">urgent first</text>
+<text class="t" x="830.0" y="332.5" text-anchor="middle">/staff</text>
+<text class="s" x="830.0" y="350.5" text-anchor="middle">token required</text>
+<text class="t" x="85.0" y="517.5" text-anchor="middle">Thumbs-down</text>
+<text class="s" x="85.0" y="535.5" text-anchor="middle">from Chat UI</text>
+<text class="t" x="241.0" y="517.5" text-anchor="middle">/staff review</text>
+<text class="s" x="241.0" y="535.5" text-anchor="middle">flagged queue</text>
+<text class="t" x="397.0" y="517.5" text-anchor="middle">New YAML</text>
+<text class="s" x="397.0" y="535.5" text-anchor="middle">scenario</text>
+<text class="t" x="563.0" y="509.0" text-anchor="middle">Evals</text>
+<text class="s" x="563.0" y="527.0" text-anchor="middle">17 scenarios</text>
+<text class="s" x="563.0" y="543.0" text-anchor="middle">fresh SQLite DB</text>
+<text class="t" x="734.0" y="509.0" text-anchor="middle">CI gate</text>
+<text class="s" x="734.0" y="527.0" text-anchor="middle">safety gates</text>
+<text class="s" x="734.0" y="543.0" text-anchor="middle">style reported</text>
+<text class="t" x="905.0" y="517.5" text-anchor="middle">Render deploy</text>
+<text class="s" x="905.0" y="535.5" text-anchor="middle">main → live</text>
+<circle class="dot" cx="32" cy="628" r="6"/><text class="lb" x="44" y="632">live request: UI → /chat → agent ⇄ LLM → tools → DB → guardrails → reply</text>
+<circle class="dot2" cx="600" cy="628" r="6"/><text class="lb" x="612" y="632">emergency: tools → staff_alerts → /staff</text>
+<circle class="dot3" cx="32" cy="652" r="6"/><text class="lb" x="44" y="656">offline: 👎 → review → new scenario → evals → CI → deploy</text>
+<path class="e" d="M600 652 H640"/><text class="lb" x="648" y="656">solid = live request</text>
+<path class="e off" d="M790 652 H830"/><text class="lb" x="838" y="656">dashed = offline</text>
+</svg>
