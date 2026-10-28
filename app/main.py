@@ -1,12 +1,18 @@
+import hmac
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sqlalchemy import case, select, text
 
-from app import config, guard
-from app.agent import run_turn
-from app.db import SessionLocal
+from app import config, guard, tools
+from app.agent import RED_FLAG_NOTE_MARKER, run_turn
+from app.db import Conversation, Feedback, SessionLocal, StaffAlert
 from app.seed import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -15,21 +21,60 @@ for h in logging.getLogger().handlers:
 log = logging.getLogger("app")
 
 SESSION_ID = r"^[A-Za-z0-9_-]{8,64}$"
+STATIC = Path(__file__).resolve().parent.parent / "static"
+
+
+def visible(text: str) -> str:
+    """Message text as the patient wrote/saw it (drops the agent's internal red-flag note)."""
+    return text.split(RED_FLAG_NOTE_MARKER)[0]
 
 
 @asynccontextmanager
 async def lifespan(_app):
     log.info("startup seed=%s", init_db())
+    if not config.STAFF_TOKEN:
+        log.warning("STAFF_TOKEN is not set: the staff API is open. Set it in any shared deployment.")
     yield
 
 
 app = FastAPI(title=config.OFFICE_NAME, lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 class ChatIn(BaseModel):
     session_id: str = Field(pattern=SESSION_ID)
     message: str = Field(min_length=1, max_length=2000)
     turn: int | None = Field(None, ge=1, description="Client turn counter; a retried turn returns the original reply")
+
+
+class SessionIn(BaseModel):
+    session_id: str = Field(pattern=SESSION_ID)
+
+
+class FeedbackIn(SessionIn):
+    rating: Literal["up", "down"]
+    comment: str = Field("", max_length=1000)
+
+
+@app.get("/")
+def index():
+    return FileResponse(STATIC / "index.html")
+
+
+@app.get("/staff")
+def staff_page():
+    return FileResponse(STATIC / "staff.html")
+
+
+@app.get("/health")
+def health():
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        return {"ok": True}
+    except Exception:
+        log.exception("health_db_failed")
+        return JSONResponse({"ok": False}, status_code=503)
 
 
 @app.post("/chat")
@@ -41,3 +86,79 @@ def chat(body: ChatIn) -> dict:
         # Never a stack trace or blank screen for the patient.
         log.exception("chat_failed session=%s", body.session_id)
         return {"reply": guard.canned_reply(), "options": [], "turn": body.turn, "error": True}
+
+
+@app.post("/handoff")
+def handoff(body: SessionIn) -> dict:
+    """The always-visible "Talk to a person" button. Works even when the LLM is down."""
+    try:
+        with SessionLocal() as db:
+            conv = db.get(Conversation, body.session_id)
+            last = [visible(m["text"]) for m in (conv.messages if conv else []) if m["role"] == "user"][-3:]
+            summary = "Patient pressed 'Talk to a person'." + (" Recent messages: " + " | ".join(last) if last else "")
+            tools.notify_staff(db, body.session_id, "normal", summary[:2000])
+        return {"reply": "I've asked a member of our team to reach out to you shortly. If it's urgent, "
+                         f"please call us at {config.OFFICE_PHONE}."}
+    except Exception:
+        log.exception("handoff_failed session=%s", body.session_id)
+        return {"reply": f"Please call us at {config.OFFICE_PHONE} and our team will help you right away.", "error": True}
+
+
+@app.post("/feedback")
+def feedback(body: FeedbackIn) -> dict:
+    with SessionLocal() as db:
+        db.add(Feedback(session_id=body.session_id, rating=body.rating, comment=body.comment.strip()))
+        if body.rating == "down":  # thumbs-down puts the conversation in the staff review queue
+            tools.get_conversation(db, body.session_id).flagged = True
+        db.commit()
+    return {"ok": True}
+
+
+# --- staff API ------------------------------------------------------------------------------
+
+def require_staff(x_staff_token: str = Header("")):
+    # ponytail: one shared token; per-user staff accounts + audit log when there's more than one office
+    if config.STAFF_TOKEN and not hmac.compare_digest(x_staff_token, config.STAFF_TOKEN):
+        raise HTTPException(401, "Staff token required")
+
+
+@app.get("/api/staff", dependencies=[Depends(require_staff)])
+def staff_data() -> dict:
+    with SessionLocal() as db:
+        alerts = db.scalars(select(StaffAlert).where(StaffAlert.status == "open").order_by(
+            case((StaffAlert.priority == "urgent", 0), else_=1), StaffAlert.created_at)).all()
+        flagged = db.scalars(select(Conversation).where(Conversation.flagged)
+                             .order_by(Conversation.updated_at.desc()).limit(50)).all()
+        comments = {f.session_id: f.comment for f in db.scalars(
+            select(Feedback).where(Feedback.rating == "down", Feedback.session_id.in_([c.session_id for c in flagged])))}
+        return {
+            "alerts": [{"id": a.id, "priority": a.priority, "summary": a.summary, "session_id": a.session_id,
+                        "created_at": a.created_at.isoformat() + "Z"} for a in alerts],
+            "flagged": [{"session_id": c.session_id, "updated_at": c.updated_at.isoformat() + "Z",
+                         "comment": comments.get(c.session_id, ""),
+                         "transcript": [{"role": m["role"], "text": visible(m["text"])} for m in c.messages
+                                        if m["role"] in ("user", "assistant") and m.get("text")]}
+                        for c in flagged],
+        }
+
+
+@app.post("/api/alerts/{alert_id}/resolve", dependencies=[Depends(require_staff)])
+def resolve_alert(alert_id: int) -> dict:
+    with SessionLocal() as db:
+        alert = db.get(StaffAlert, alert_id)
+        if alert is None:
+            raise HTTPException(404, "No such alert")
+        alert.status = "resolved"
+        db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/conversations/{session_id}/unflag", dependencies=[Depends(require_staff)])
+def unflag(session_id: str) -> dict:
+    with SessionLocal() as db:
+        conv = db.get(Conversation, session_id)
+        if conv is None:
+            raise HTTPException(404, "No such conversation")
+        conv.flagged = False
+        db.commit()
+    return {"ok": True}

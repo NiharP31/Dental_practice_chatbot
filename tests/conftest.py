@@ -45,3 +45,10 @@ def add_patient(db, name="Daniel Reyes", dob=date(1984, 3, 12), insurance="Delta
     db.add(p)
     db.commit()
     return p.id
+
+
+@pytest.fixture(autouse=True)
+def _no_external_side_effects(monkeypatch):
+    # A developer's .env must not make tests post to Slack or lock the staff API.
+    monkeypatch.setattr(config, "SLACK_WEBHOOK_URL", "")
+    monkeypatch.setattr(config, "STAFF_TOKEN", "")

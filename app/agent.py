@@ -14,6 +14,7 @@ from app.prompt import build_system_prompt
 log = logging.getLogger("agent")
 MAX_ROUNDS = 6
 HISTORY_TURNS = 20  # user turns of history sent to the model
+RED_FLAG_NOTE_MARKER = "\n\n[System note:"
 ApptType = Literal["cleaning", "checkup", "emergency"]
 
 
@@ -152,7 +153,7 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
         if not state.get("red_flag_alerted"):
             tools.notify_staff(db, session_id, "urgent", f"RED FLAG symptoms reported in chat: {text[:500]}")
             tools.set_state(conv, red_flag_alerted=True)
-        text += ("\n\n[System note: red-flag symptoms detected. The patient has already been told to call 911 / go "
+        text += (RED_FLAG_NOTE_MARKER + " red-flag symptoms detected. The patient has already been told to call 911 / go "
                  "to the ER and staff were alerted as urgent. Don't repeat the 911 advice; be calm and brief, ask "
                  "what happened if unclear, and offer the soonest emergency slot.]")
     history.append({"role": "user", "text": text})

@@ -21,6 +21,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+STAFF_TOKEN = os.getenv("STAFF_TOKEN", "")
 
 
 def office_now() -> datetime:

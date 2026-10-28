@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Staff Alerts - Bright Smile Dental</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #14202b; --muted: #4a5866; --line: #d5dbe1;
+          --urgent: #b42318; --urgent-bg: #fef3f2; --accent: #0b5cad; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 18px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+  header { background: var(--card); border-bottom: 1px solid var(--line); padding: 16px; display: flex;
+           justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 1.3rem; margin: 0; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  h2 { font-size: 1.1rem; margin: 24px 0 8px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 0 0 10px; }
+  .urgent { border-left: 6px solid var(--urgent); background: var(--urgent-bg); }
+  .meta { color: var(--muted); font-size: .9rem; }
+  .badge { display: inline-block; font-weight: 700; font-size: .8rem; letter-spacing: .04em; padding: 2px 8px;
+           border-radius: 999px; background: var(--line); }
+  .urgent .badge { background: var(--urgent); color: #fff; }
+  button { font: inherit; font-size: .95rem; padding: 8px 14px; border-radius: 8px; border: 2px solid var(--accent);
+           background: var(--card); color: var(--accent); cursor: pointer; }
+  button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid #f5a623; outline-offset: 2px; }
+  input { font: inherit; padding: 8px; border: 2px solid var(--line); border-radius: 8px; }
+  .row { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+  .msg { margin: 4px 0; } .msg b { display: inline-block; min-width: 70px; }
+  .empty { color: var(--muted); font-style: italic; }
+  #err { color: var(--urgent); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bright Smile Dental: Staff</h1>
+  <form id="auth" onsubmit="saveToken(event)">
+    <label for="token">Staff token</label>
+    <input id="token" type="password" autocomplete="current-password">
+    <button type="submit">Save</button>
+  </form>
+</header>
+<main>
+  <p id="err" role="alert"></p>
+  <h2>Open alerts <span class="meta">(urgent first, refreshes every 15s)</span></h2>
+  <div id="alerts" aria-live="polite"></div>
+  <h2>Flagged conversations <span class="meta">(thumbs-down from patients)</span></h2>
+  <div id="flagged"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const when = (iso) => new Date(iso).toLocaleString();
+let token = sessionStorage.getItem("staffToken") || "";
+$("token").value = token;
+
+function saveToken(e) { e.preventDefault(); token = $("token").value; sessionStorage.setItem("staffToken", token); load(); }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {...opts, headers: {"X-Staff-Token": token}});
+  if (r.status === 401) throw new Error("Enter a valid staff token above.");
+  if (!r.ok) throw new Error("Couldn't reach the server. Retrying...");
+  return r.json();
+}
+
+async function act(path) { try { await api(path, {method: "POST"}); load(); } catch (e) { $("err").textContent = e.message; } }
+
+async function load() {
+  try {
+    const d = await api("/api/staff");
+    $("err").textContent = "";
+    $("alerts").innerHTML = d.alerts.length ? d.alerts.map((a) => `
+      <div class="card ${a.priority === "urgent" ? "urgent" : ""}">
+        <div class="row">
+          <div><span class="badge">${esc(a.priority.toUpperCase())}</span>
+            <span class="meta">${esc(when(a.created_at))} · session ${esc(a.session_id)}</span>
+            <p>${esc(a.summary)}</p></div>
+          <button onclick="act('/api/alerts/${a.id}/resolve')">Mark handled</button>
+        </div>
+      </div>`).join("") : '<p class="empty">No open alerts.</p>';
+    $("flagged").innerHTML = d.flagged.length ? d.flagged.map((c) => `
+      <div class="card">
+        <div class="row">
+          <div><span class="meta">${esc(when(c.updated_at))} · session ${esc(c.session_id)}</span>
+            ${c.comment ? `<p><b>Patient comment:</b> ${esc(c.comment)}</p>` : ""}</div>
+          <button onclick="act('/api/conversations/${encodeURIComponent(c.session_id)}/unflag')">Reviewed</button>
+        </div>
+        <details><summary>Transcript (${c.transcript.length} messages)</summary>
+          ${c.transcript.map((m) => `<p class="msg"><b>${m.role === "user" ? "Patient" : "Riley"}:</b> ${esc(m.text)}</p>`).join("")}
+        </details>
+      </div>`).join("") : '<p class="empty">No flagged conversations.</p>';
+  } catch (e) { $("err").textContent = e.message; }
+}
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>
