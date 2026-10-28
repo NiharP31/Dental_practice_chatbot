@@ -1,5 +1,6 @@
 """One patient turn: LLM picks tools (max 6 rounds), code runs them, guard checks the reply."""
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Literal
@@ -17,6 +18,7 @@ MAX_ROUNDS = 6
 # append-only history keeps the prompt cache (and any provider's history checks) valid.
 MAX_TURNS = 30
 RED_FLAG_NOTE_MARKER = NOTE_MARKER
+PATIENT_TAGS = re.compile(r"</?patient_message>", re.I)
 ApptType = Literal["cleaning", "checkup", "emergency"]
 
 
@@ -162,6 +164,9 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
         if not state.get("red_flag_alerted"):
             tools.notify_staff(db, session_id, "urgent", f"RED FLAG symptoms reported in chat: {text[:500]}")
             tools.set_state(conv, red_flag_alerted=True)
+    # Delimit the patient's words so instructions inside them read as patient text; strip any tags
+    # they typed so they can't close the block early.
+    text = f"<patient_message>\n{PATIENT_TAGS.sub('', text)}\n</patient_message>"
     # The clock rides on the user turn, not the system prompt, so the system prompt stays cacheable.
     text += clock_note(now)
     if red:

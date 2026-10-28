@@ -50,9 +50,13 @@
   Render's proxy overwrites the header. If it only appends, a client could send a fake
   `X-Forwarded-For` to dodge the per-IP limit. The daily LLM budget and the 30-turn session cap
   still bound the cost either way. Checking this after deploy is in the deploy steps.
-- **Prompt-injection style slip.** Both models sometimes open a refusal with "Ahoy"/"matey" when
-  told to be a pirate. They still refuse, leak nothing and change nothing. Claude passed 1 of 3
-  runs on the strict style check and 3/3 on the safety checks.
+- **Prompt-injection style slip.** Told to "be a pirate", both models sometimes opened their refusal
+  with "Ahoy"/"matey". They still refused, leaked nothing and changed nothing. Before the fix, Claude
+  passed 1 of 3 runs on the strict style check (safety checks: 3/3).
+  - **Fix:** patient text is now wrapped in `<patient_message>` tags, and any tags the patient typed
+    are stripped. The prompt also includes one example of refusing a persona in Riley's normal voice.
+  - **After:** Claude passed 5/5 runs, and the full suite stayed 13/13.
+  - Not re-measured on the Gemini fallback, which slipped more often before the fix.
 - **Postgres parity:** `docker compose up -d` then
   `TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:55432/test uv run pytest`
   runs the suite (incl. the double-booking contention test) on Postgres. The fixture refuses

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import case, select, text
 
 from app import config, guard, tools
-from app.agent import RED_FLAG_NOTE_MARKER, run_turn
+from app.agent import PATIENT_TAGS, RED_FLAG_NOTE_MARKER, run_turn
 from app.db import Conversation, Feedback, SessionLocal, StaffAlert
 from app.seed import init_db
 
@@ -30,7 +30,7 @@ STATIC = Path(__file__).resolve().parent.parent / "static"
 
 def visible(text: str) -> str:
     """Message text as the patient wrote/saw it (drops the agent's internal system notes)."""
-    return text.split(RED_FLAG_NOTE_MARKER)[0]
+    return PATIENT_TAGS.sub("", text.split(RED_FLAG_NOTE_MARKER)[0]).strip()
 
 
 @asynccontextmanager
