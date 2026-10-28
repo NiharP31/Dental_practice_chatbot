@@ -18,14 +18,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import yaml
-from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
+# Before any app import: evals build their own SQLite DBs and must never reach a production
+# DATABASE_URL from .env (load_dotenv doesn't override variables that are already set).
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
-from app import agent, config, guard, llm, tools
-from app.dates import resolve_when
-from app.db import Appointment, Base, Conversation, LlmUsage, Patient, Slot, StaffAlert, make_engine
-from app.seed import seed
+import yaml  # noqa: E402
+from sqlalchemy import select  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+
+from app import agent, config, guard, llm, tools  # noqa: E402
+from app.dates import resolve_when  # noqa: E402
+from app.db import Appointment, Base, Conversation, LlmUsage, Patient, Slot, StaffAlert, make_engine  # noqa: E402
+from app.seed import seed  # noqa: E402
 
 EVAL_NOW = datetime(2026, 11, 4, 10, 0)  # a Wednesday mid-morning; seed data is relative to it
 HERE = Path(__file__).resolve().parent
@@ -180,16 +184,24 @@ def run_scenario(sc: dict, use_judge: bool) -> dict:
                            for c in m.get("tool_calls", [])]
             transcript.append(f"ASSISTANT: {payload['reply']}")
         with Session() as db:
-            fails = check(sc["expect"], before, snapshot(db), db, replies, offers)
+            after = snapshot(db)
+            # Safety (gates CI): required DB state, verification, alerts, and no unbacked claims.
+            fails = check(sc["expect"], before, after, db, replies, offers)
             fails += [f"unbacked claim shown to patient: {b}" for b in unbacked_claims(replies, changed, days, registered)]
+            told = [c for r in replies for c in guard.alert_claims(r)]
+            if told and not tools.session_has_alert(db, sid):
+                fails.append(f"reply says staff were notified but no staff_alerts row exists: {told[0]!r}")
+            # Style (reported only): persona words, nice-to-have wording.
+            style_fails = check(sc.get("style", {}), before, after, db, replies, offers)
             usage = db.scalars(select(LlmUsage)).all()
     except Exception as e:
-        fails, usage = [f"crashed: {type(e).__name__}: {e}"], []
+        fails, style_fails, usage = [f"crashed: {type(e).__name__}: {e}"], [], []
     finally:
         logging.getLogger("guard").removeHandler(events)
         engine.dispose()
     tone, why = judge("\n".join(transcript)) if use_judge else (None, "")
-    return {"id": sc["id"], "passed": not fails, "fails": fails, "turns": len(sc["turns"]),
+    return {"id": sc["id"], "passed": not fails, "fails": fails, "style_passed": not style_fails,
+            "style_fails": style_fails, "turns": len(sc["turns"]),
             "llm_calls": len(usage), "cost_usd": sum(u.cost_usd for u in usage),
             "cache_read": sum(u.cache_read_tokens for u in usage), "guard_events": len(events.events),
             "guard_texts": events.events,
@@ -231,30 +243,32 @@ def main() -> int:
         for sc in scenarios:
             r = {**run_scenario(sc, args.judge), "run": run}
             results.append(r)
+            style = "" if r["style_passed"] else f"  [style: {r['style_fails'][0]}]"
             print(f"{'PASS' if r['passed'] else 'FAIL'}  {r['id']}" + (f" (run {run})" if args.repeat > 1 else "")
-                  + ("" if r["passed"] else f": {r['fails'][0]}"), flush=True)
+                  + ("" if r["passed"] else f": {r['fails'][0]}") + style, flush=True)
 
     if args.repeat > 1:  # LLMs are nondeterministic: the pass rate is the honest number
-        print(f"\n| Scenario | Pass rate ({args.repeat} runs) | Avg cost | Avg tone |")
-        print("|---|---|---|---|")
+        print(f"\n| Scenario | Safety ({args.repeat} runs) | Style ({args.repeat} runs) | Avg cost | Avg tone |")
+        print("|---|---|---|---|---|")
         for sc in scenarios:
             rs = [r for r in results if r["id"] == sc["id"]]
             tones = [r["tone"] for r in rs if r["tone"] is not None]
-            print(f"| {sc['id']} | {sum(r['passed'] for r in rs)}/{len(rs)} | ${sum(r['cost_usd'] for r in rs) / len(rs):.4f} | "
-                  + (f"{sum(tones) / len(tones):.1f}/5" if tones else "-") + " |")
+            print(f"| {sc['id']} | {sum(r['passed'] for r in rs)}/{len(rs)} | {sum(r['style_passed'] for r in rs)}/{len(rs)} | "
+                  f"${sum(r['cost_usd'] for r in rs) / len(rs):.4f} | " + (f"{sum(tones) / len(tones):.1f}/5" if tones else "-") + " |")
 
-    print("\n| Scenario | Result | Turns | LLM calls | Est. cost | Guard replaced | Tone | Time |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("\n| Scenario | Safety | Style | Turns | LLM calls | Est. cost | Guard replaced | Tone | Time |")
+    print("|---|---|---|---|---|---|---|---|---|")
     for r in results:
         tone = "-" if r["tone"] is None else f"{r['tone']}/5"
-        print(f"| {r['id']} | {'PASS' if r['passed'] else '**FAIL**'} | {r['turns']} | {r['llm_calls']} | "
-              f"${r['cost_usd']:.4f} | {r['guard_events']} | {tone} | {r['seconds']}s |")
+        print(f"| {r['id']} | {'PASS' if r['passed'] else '**FAIL**'} | {'pass' if r['style_passed'] else 'miss'} | "
+              f"{r['turns']} | {r['llm_calls']} | ${r['cost_usd']:.4f} | {r['guard_events']} | {tone} | {r['seconds']}s |")
     passed = sum(r["passed"] for r in results)
-    print(f"\n{passed}/{len(results)} passed | total est. cost ${sum(r['cost_usd'] for r in results):.4f} | "
-          f"cache-read tokens {sum(r['cache_read'] for r in results)}")
+    print(f"\nsafety {passed}/{len(results)} | style {sum(r['style_passed'] for r in results)}/{len(results)} (not gating) | "
+          f"total est. cost ${sum(r['cost_usd'] for r in results):.4f} | cache-read tokens {sum(r['cache_read'] for r in results)}")
     for r in results:
-        if not r["passed"]:
-            print(f"\n--- {r['id']} failures:\n  " + "\n  ".join(r["fails"]))
+        if not r["passed"] or not r["style_passed"]:
+            print(f"\n--- {r['id']}" + (f" (run {r['run']})" if args.repeat > 1 else "") + ":\n  "
+                  + "\n  ".join([f"SAFETY: {f}" for f in r["fails"]] + [f"style: {f}" for f in r["style_fails"]]))
             if args.verbose:
                 print("\n".join("    " + line for line in r["transcript"]))
     for r in results:  # what the model tried to say before the guard stepped in: worth reading every run
@@ -268,7 +282,7 @@ def main() -> int:
     out = HERE / "results"
     out.mkdir(exist_ok=True)
     (out / f"{datetime.now():%Y%m%d-%H%M%S}-{provider}.json").write_text(json.dumps(results, indent=2, default=str))
-    return 0 if passed == len(results) else 1
+    return 0 if passed == len(results) else 1  # only safety gates CI; style and tone are reported
 
 
 if __name__ == "__main__":
