@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime, time, timedelta
 
 import pytest
@@ -11,8 +12,10 @@ NOW = datetime(2026, 10, 28, 9, 0)  # Wednesday
 
 @pytest.fixture
 def session_factory(tmp_path):
-    # File-backed SQLite so separate connections really contend (in-memory DBs aren't shared).
-    engine = make_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    # TEST_DATABASE_URL runs the suite against Postgres (see docker-compose.yml); default is a
+    # file-backed SQLite so separate connections really contend (in-memory DBs aren't shared).
+    engine = make_engine(os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     yield sessionmaker(engine, expire_on_commit=False)
     engine.dispose()

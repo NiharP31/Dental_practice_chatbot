@@ -1,9 +1,11 @@
 from datetime import UTC, date, datetime
 
-from sqlalchemy import JSON, Boolean, ForeignKey, String, Text, create_engine
+from sqlalchemy import JSON, Boolean, ForeignKey, String, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from app import config
+
+SQLITE_BUSY_TIMEOUT_MS = 5000  # below pytest-timeout's 10s so a stuck lock fails loudly
 
 
 def _utcnow() -> datetime:
@@ -84,7 +86,14 @@ def make_engine(url: str):
         if url.startswith(prefix):
             url = "postgresql+psycopg://" + url[len(prefix):]
     if url.startswith("sqlite"):
-        return create_engine(url, connect_args={"check_same_thread": False, "timeout": 15})
+        engine = create_engine(url, connect_args={"check_same_thread": False})
+
+        @event.listens_for(engine, "connect")
+        def _pragmas(conn, _):
+            # Wait for a competing writer instead of failing with "database is locked".
+            conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+
+        return engine
     # prepare_threshold=None: Supabase's transaction pooler (port 6543) can't hold prepared statements
     return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5,
                          connect_args={"prepare_threshold": None})
