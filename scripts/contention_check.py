@@ -5,9 +5,8 @@ Each round, two threads on separate connections race tools.book() for the same s
 must win and the other must get slot_taken, leaving one appointment.
 
     uv run python scripts/contention_check.py "postgresql://...:6543/postgres" [rounds]
-    uv run python scripts/contention_check.py            # uses DATABASE_URL
+    uv run python scripts/contention_check.py 10         # uses DATABASE_URL from .env
 """
-import os
 import sys
 import threading
 import uuid
@@ -19,15 +18,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import func, select, text  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
-from app import tools  # noqa: E402
+from app import config, tools  # noqa: E402
 from app.db import Appointment, Base, Conversation, Patient, Slot, make_engine  # noqa: E402
 
 FAR_FUTURE = datetime(2030, 1, 7, 8, 0)  # slots must be in the future for book() to accept them
 
 
 def main() -> int:
-    url = sys.argv[1] if len(sys.argv) > 1 else os.getenv("DATABASE_URL", "")
-    rounds = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+    args = sys.argv[1:]
+    rounds = int(args.pop()) if args and args[-1].isdigit() else 10
+    url = args[0] if args else config.DATABASE_URL  # config loads .env, so the password never hits the shell
     if not url.startswith(("postgres://", "postgresql")):
         print("Pass a Postgres URL (or set DATABASE_URL).")
         return 2
