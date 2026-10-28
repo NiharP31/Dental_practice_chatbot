@@ -176,3 +176,65 @@ def test_migrate_adds_staff_alerts_patient_id_to_an_existing_table(tmp_path):
     assert migrate(engine) == ["staff_alerts.patient_id"]
     assert "patient_id" in {c["name"] for c in inspect(engine).get_columns("staff_alerts")}
     assert migrate(engine) == []  # idempotent
+
+
+# --- shared-demo reset ------------------------------------------------------------------------
+
+def _demo_state(db, today):
+    from datetime import datetime, time, timedelta
+
+    from app.db import Appointment, Patient, Slot
+    from app.seed import PATIENTS
+    seed_names = {p[0] for p in PATIENTS}
+    rows = (db.query(Patient.full_name, Appointment.appt_type, Appointment.status, Slot.start)
+            .join(Appointment, Appointment.patient_id == Patient.id).join(Slot, Slot.id == Appointment.slot_id).all())
+    seeded = sorted((n, t, s.isoformat()) for n, t, st, s in rows if n in seed_names and st == "booked")
+    lo, hi = datetime.combine(today + timedelta(days=2), time()), datetime.combine(today + timedelta(days=11), time())
+    assert all(lo <= datetime.fromisoformat(s) < hi for _, _, s in seeded), seeded
+    assert all(8 <= datetime.fromisoformat(s).hour < 18 for _, _, s in seeded)
+    return seeded, sorted((n, t, st) for n, t, st, _ in rows if n not in seed_names)
+
+
+def test_reset_demo_restores_seed_and_keeps_testers(session_factory):
+    from datetime import date
+
+    from app import tools
+    from app.db import Appointment, Feedback, Patient
+    from app.seed import reset_demo, seed
+    today = date(2026, 11, 2)  # a Monday
+    with session_factory() as db:
+        seed(db, today=date(2026, 10, 28))  # seeded a week ago: Daniel's cleaning is already in the past
+        daniel = db.query(Patient).filter_by(full_name="Daniel Reyes").one()
+        db.query(Appointment).filter_by(patient_id=daniel.id).update({"status": "cancelled"})  # a tester cancelled it
+        tester = tools.register_patient(db, "tester-1", "Pat Tester", "5559998888", "1990-01-01", "none")["patient_id"]
+        tools.notify_staff(db, "tester-1", "normal", "Pat wants a callback")       # linked to a real patient: kept
+        tools.notify_staff(db, "anon-1", "urgent", "Broken tooth, never identified")  # cleared
+        db.add_all([Feedback(session_id="tester-1", rating="up"), Feedback(session_id="anon-1", rating="down")])
+        tools.get_conversation(db, "anon-1")
+        tools.get_conversation(db, "seed-only").state = {"verified": [daniel.id]}  # only touched a seeded patient
+        db.commit()
+
+        r = reset_demo(db, today=today)
+        assert r["appointments_reset"] == 6 and r["conversations_removed"] == 2
+        assert (r["feedback_removed"], r["alerts_removed"]) == (1, 1)
+        seeded, others = _demo_state(db, today)
+        assert len(seeded) == 6  # one upcoming appointment per seeded patient, 2-10 days out, office hours
+        assert db.get(Patient, tester) is not None
+        assert [c.session_id for c in db.query(main.Conversation)] == ["tester-1"]
+        assert [f.session_id for f in db.query(Feedback)] == ["tester-1"]
+        assert [a.summary for a in db.query(main.StaffAlert)] == ["Pat wants a callback"]
+
+        again = reset_demo(db, today=today)  # idempotent
+        assert _demo_state(db, today) == (seeded, others)
+        assert (again["conversations_removed"], again["feedback_removed"], again["alerts_removed"]) == (0, 0, 0)
+
+
+def test_reset_demo_endpoint_requires_staff_token(client, session_factory, monkeypatch):
+    from app import config
+    from app.seed import seed
+    with session_factory() as db:
+        seed(db)
+    monkeypatch.setattr(config, "STAFF_TOKEN", "s3cret")
+    assert client.post("/api/staff/reset-demo").status_code == 401
+    r = client.post("/api/staff/reset-demo", headers={"X-Staff-Token": "s3cret"})
+    assert r.status_code == 200 and r.json()["ok"] and r.json()["appointments_reset"] == 6

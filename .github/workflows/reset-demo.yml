@@ -1,0 +1,25 @@
+name: reset-demo
+
+# The live demo DB is shared by reviewers: put the seeded patients back every night (11:00 UTC is
+# 3-4am Pacific) or on demand. Needs a STAFF_TOKEN repo secret equal to the token Render generated.
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    env:
+      STAFF_TOKEN: ${{ secrets.STAFF_TOKEN }}
+      DEMO_URL: ${{ vars.DEMO_URL || 'https://bright-smile-chatbot.onrender.com' }}
+    steps:
+      - name: No token configured
+        if: env.STAFF_TOKEN == ''
+        run: echo "::notice::Demo reset skipped - add a STAFF_TOKEN repository secret (same value as on Render)."
+      - name: Reset demo data
+        if: env.STAFF_TOKEN != ''
+        # Free Render instances sleep; retries cover the ~1 minute cold start.
+        run: >
+          curl --fail-with-body -sS -m 120 --retry 3 --retry-delay 30 --retry-all-errors
+          -X POST "$DEMO_URL/api/staff/reset-demo" -H "X-Staff-Token: $STAFF_TOKEN"

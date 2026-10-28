@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import case, select, text
 
-from app import config, guard, tools
+from app import config, guard, seed, tools
 from app.agent import PATIENT_TAGS, RED_FLAG_NOTE_MARKER, run_turn
 from app.db import Conversation, Feedback, Patient, SessionLocal, StaffAlert
 from app.seed import init_db
@@ -193,6 +193,16 @@ def staff_data() -> dict:
                                         if m["role"] in ("user", "assistant") and m.get("text")]}
                         for c in flagged],
         }
+
+
+@app.post("/api/staff/reset-demo", dependencies=[Depends(require_staff)])
+def reset_demo() -> dict:
+    """Shared live demo: put the seeded patients' appointments back 2-10 days out and clear test
+    chatter. Also run nightly by .github/workflows/reset-demo.yml."""
+    with SessionLocal() as db:
+        result = seed.reset_demo(db)
+    log.info("demo_reset %s", result)
+    return {"ok": True, **result}
 
 
 @app.post("/api/alerts/{alert_id}/resolve", dependencies=[Depends(require_staff)])
