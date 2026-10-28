@@ -3,19 +3,24 @@ inputs, enforces identity checks, and owns its transaction. Errors raise ToolErr
 for the agent loop to hand back to the model."""
 import hashlib
 import json
+import logging
 import re
+import threading
 from datetime import date, datetime, time, timedelta
 from itertools import pairwise
 
+import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app import config
+from app import config, guard
 from app.dates import ToolError, UnclearDate, Window, fmt_slot, resolve_when
 from app.db import Appointment, Conversation, IdempotencyKey, Patient, Slot, StaffAlert
 
 __all__ = ["ToolError", "UnclearDate", "verify_patient", "register_patient", "find_slots", "book",
            "modify", "notify_staff", "get_conversation"]
+
+log = logging.getLogger("tools")
 
 MAX_OPTIONS = 3
 MAX_VERIFY_FAILURES = 3
@@ -305,4 +310,19 @@ def notify_staff(db: Session, session_id: str, priority: str, summary: str) -> d
     alert = StaffAlert(session_id=session_id, priority=priority, summary=summary.strip()[:2000])
     db.add(alert)
     db.commit()
+    if config.SLACK_WEBHOOK_URL:
+        # Off the request path: a slow or broken webhook must never delay or fail the patient's turn.
+        threading.Thread(target=post_slack, args=(priority, alert.summary), daemon=True).start()
     return {"alerted": True, "alert_id": alert.id, "priority": priority}
+
+
+def post_slack(priority: str, summary: str) -> bool:
+    # ponytail: phone/DOB are masked, but names/symptoms still go to Slack; production needs a BAA'd
+    # channel or just a link to /staff.
+    text = f"{':rotating_light: URGENT' if priority == 'urgent' else ':bell:'} {config.OFFICE_NAME}: {guard.redact(summary)}"
+    try:
+        httpx.post(config.SLACK_WEBHOOK_URL, json={"text": text}, timeout=5).raise_for_status()
+        return True
+    except Exception as e:
+        log.warning("slack_failed error=%s", type(e).__name__)
+        return False
