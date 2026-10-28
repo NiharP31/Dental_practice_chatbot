@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bright Smile Dental - Chat with Riley</title>
+<meta name="description" content="Book, reschedule or ask a question at Bright Smile Dental.">
+<style>
+  :root {
+    --bg: #f3f6f8; --panel: #ffffff; --ink: #102030; --muted: #44535f; --line: #cfd8df;
+    --brand: #0a5c63; --brand-ink: #ffffff; --bot: #e8f2f2; --me: #0a5c63; --me-ink: #ffffff;
+    --focus: #f5a623; --warn: #9a3412; --scale: 1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: calc(19px * var(--scale))/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .app { max-width: 760px; height: 100%; margin: 0 auto; display: flex; flex-direction: column; background: var(--panel);
+         border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
+  header { padding: 14px 16px; background: var(--brand); color: var(--brand-ink); display: flex; gap: 10px;
+           align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  header h1 { font-size: 1.15em; margin: 0; }
+  header p { margin: 0; font-size: .8em; opacity: .95; }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { font: inherit; cursor: pointer; border-radius: 10px; min-height: 44px; }
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  .hdr-btn { background: transparent; color: var(--brand-ink); border: 2px solid var(--brand-ink); padding: 6px 12px; font-size: .85em; }
+  .person { background: #fff; color: var(--brand); border: 2px solid #fff; font-weight: 700; }
+  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bot { background: var(--bot); align-self: flex-start; border-bottom-left-radius: 4px; }
+  .me { background: var(--me); color: var(--me-ink); align-self: flex-end; border-bottom-right-radius: 4px; }
+  .note { align-self: center; color: var(--muted); font-size: .85em; text-align: center; }
+  .error { background: #fff4ed; color: var(--warn); border: 1px solid #fdba74; }
+  .typing { color: var(--muted); font-style: italic; }
+  #chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 8px; }
+  .chip { background: #fff; color: var(--brand); border: 2px solid var(--brand); padding: 8px 14px; font-weight: 600; text-align: left; }
+  .chip:hover { background: var(--bot); }
+  #feedback { display: none; padding: 6px 16px 10px; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: .9em; }
+  #feedback.show { display: flex; }
+  #feedback button { background: #fff; border: 2px solid var(--line); padding: 4px 14px; font-size: 1.1em; }
+  form { display: flex; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+  textarea { flex: 1; font: inherit; padding: 10px 12px; border: 2px solid #8a99a6; border-radius: 10px; resize: none; min-height: 52px; max-height: 160px; color: var(--ink); background: #fff; }
+  .send { background: var(--brand); color: var(--brand-ink); border: 0; padding: 0 20px; font-weight: 700; }
+  .send:disabled { opacity: .6; cursor: wait; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1418; --panel: #121c21; --ink: #eef3f5; --muted: #b5c2ca; --line: #2c3a42;
+            --bot: #1c2b31; --brand: #0e7c86; }
+    textarea, .chip, #feedback button { background: #0d1418; color: var(--ink); }
+    .chip { color: #9fe3e8; border-color: #9fe3e8; }
+    .person { background: #0d1418; color: #fff; }
+    .error { background: #2a1a12; color: #fdba74; }
+  }
+  @media (max-width: 520px) { .msg { max-width: 92%; } header p { display: none; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1>Bright Smile Dental</h1>
+      <p>Chat with Riley · Mon-Sat 8am-6pm · (555) 010-2200</p>
+    </div>
+    <div class="tools">
+      <button class="hdr-btn" id="bigger" aria-pressed="false" title="Make text bigger">A+ Larger text</button>
+      <button class="hdr-btn" id="restart">New chat</button>
+      <button class="hdr-btn person" id="person">Talk to a person</button>
+    </div>
+  </header>
+
+  <div id="log" role="log" aria-live="polite" aria-label="Conversation"></div>
+  <div id="chips" role="group" aria-label="Quick replies"></div>
+  <div id="feedback" role="group" aria-label="Rate this conversation">
+    <span id="fb-label">Was this chat helpful?</span>
+    <button data-rating="up" aria-label="Yes, helpful">👍</button>
+    <button data-rating="down" aria-label="No, not helpful">👎</button>
+  </div>
+  <form id="form">
+    <label for="input" class="sr-only">Type your message</label>
+    <textarea id="input" rows="1" placeholder="Type your message..." maxlength="2000" autocomplete="off"></textarea>
+    <button class="send" id="send" type="submit">Send</button>
+  </form>
+</div>
+
+<script>
+const PHONE = "(555) 010-2200";
+const GREETING = "Hi, I'm Riley from Bright Smile Dental! I can book, reschedule or cancel appointments, help with dental emergencies, and answer questions about insurance, payment and hours. How can I help today?";
+const STARTERS = ["Book a cleaning", "I have a dental emergency", "Reschedule or cancel", "Insurance & payment options"];
+const $ = (id) => document.getElementById(id);
+const log = $("log"), input = $("input"), send = $("send");
+
+// Per-browser conveniences only; the real conversation lives on the server.
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+let state = store.get("chat", null) || fresh();
+let busy = false;
+
+function fresh() {
+  const id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)).replace(/[^A-Za-z0-9-]/g, "");
+  return { session: id, turn: 0, messages: [{ who: "bot", text: GREETING }], chips: STARTERS, rated: false };
+}
+function save() { store.set("chat", state); }
+
+function esc(s) { return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function format(s) { return esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>"); }
+
+function render() {
+  log.innerHTML = state.messages.map((m) =>
+    `<div class="msg ${m.who === "me" ? "me" : m.who === "note" ? "note" : "bot"}${m.error ? " error" : ""}">` +
+    `<span class="sr-only">${m.who === "me" ? "You said:" : m.who === "bot" ? "Riley said:" : ""}</span>${format(m.text)}</div>`
+  ).join("") + (busy ? '<div class="msg bot typing">Riley is typing...</div>' : "");
+  $("chips").innerHTML = "";
+  for (const c of busy ? [] : state.chips) {
+    const b = document.createElement("button");
+    b.className = "chip"; b.type = "button"; b.textContent = c;
+    b.onclick = () => submit(c);
+    $("chips").appendChild(b);
+  }
+  $("feedback").classList.toggle("show", !state.rated && state.turn >= 2 && !busy);
+  send.disabled = busy;
+  log.scrollTop = log.scrollHeight;
+}
+
+async function post(path, body, timeoutMs = 45000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify(body), signal: ctrl.signal });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+
+async function submit(text) {
+  text = text.trim();
+  if (!text || busy) return;
+  state.turn += 1;
+  state.messages.push({ who: "me", text });
+  state.chips = []; busy = true; input.value = ""; save(); render();
+  const body = { session_id: state.session, message: text, turn: state.turn };
+  let res = null;
+  for (let attempt = 0; attempt < 2 && !res; attempt++) {
+    try { res = await post("/chat", body); }  // same turn number, so a retry can't double-book
+    catch { if (attempt === 0) await new Promise((r) => setTimeout(r, 1500)); }
+  }
+  busy = false;
+  if (res) {
+    state.messages.push({ who: "bot", text: res.reply, error: !!res.error });
+    state.chips = res.options || [];
+  } else {
+    state.messages.push({ who: "bot", error: true,
+      text: `Sorry, I couldn't connect just now. Please try again, or call us at ${PHONE}.` });
+  }
+  save(); render(); input.focus();
+}
+
+$("form").addEventListener("submit", (e) => { e.preventDefault(); submit(input.value); });
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(input.value); }  // Shift+Enter = new line
+});
+input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = input.scrollHeight + "px"; });
+
+$("person").onclick = async () => {
+  state.messages.push({ who: "me", text: "I'd like to talk to a person." });
+  busy = true; render();
+  let reply = `Please call us at ${PHONE} and our team will help you right away.`;
+  try { reply = (await post("/handoff", { session_id: state.session })).reply; } catch {}
+  busy = false;
+  state.messages.push({ who: "bot", text: reply });
+  save(); render();
+};
+
+$("feedback").addEventListener("click", async (e) => {
+  const rating = e.target.closest("button")?.dataset.rating;
+  if (!rating) return;
+  state.rated = true;
+  state.messages.push({ who: "note", text: rating === "up" ? "Thanks for the feedback!" :
+    "Thanks for telling us. A team member will review this conversation." });
+  save(); render();
+  try { await post("/feedback", { session_id: state.session, rating }); } catch {}
+});
+
+$("restart").onclick = () => { state = fresh(); save(); render(); input.focus(); };
+
+const big = store.get("bigText", false);
+function applySize(on) {
+  document.documentElement.style.setProperty("--scale", on ? 1.25 : 1);
+  $("bigger").setAttribute("aria-pressed", String(on));
+  $("bigger").textContent = on ? "A- Smaller text" : "A+ Larger text";
+}
+applySize(big);
+$("bigger").onclick = () => { const on = $("bigger").getAttribute("aria-pressed") !== "true"; store.set("bigText", on); applySize(on); };
+
+render();
+input.focus();
+</script>
+</body>
+</html>
