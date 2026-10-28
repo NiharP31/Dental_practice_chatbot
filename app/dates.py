@@ -205,3 +205,29 @@ def _minutes(p: str) -> tuple[int, int]:
         else:
             lo, hi = max(lo, t - 60), min(hi, t + 60)
     return lo, hi
+
+
+def full_dates_in(text: str) -> set[date]:
+    """Every complete date (with a year) written in free text, normalised: "03/12/1984", "3-12-84",
+    "1984-03-12", "March 12, 1984", "12th of March 1984" all give date(1984, 3, 12). Used to check a
+    DOB the model passes to verify_patient really came from the patient."""
+    t = text.lower()
+    found = []
+    for m in re.finditer(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", t):
+        found.append((int(m[1]), int(m[2]), int(m[3])))
+    for m in re.finditer(r"(?<![\d-])(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})\b", t):
+        y = int(m[3])
+        if y < 100:  # "3/12/84": a birth year, so never in the future
+            y += 2000 if 2000 + y <= date.today().year else 1900
+        found.append((y, int(m[1]), int(m[2])))
+    for m in re.finditer(r"\b" + MONTH_RE + r"\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b", t):
+        found.append((int(m[3]), MONTHS.index(m[1][:3]) + 1, int(m[2])))
+    for m in re.finditer(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?" + MONTH_RE + r",?\s+(\d{4})\b", t):
+        found.append((int(m[3]), MONTHS.index(m[2][:3]) + 1, int(m[1])))
+    out = set()
+    for y, mo, d in found:
+        try:
+            out.add(date(y, mo, d))
+        except ValueError:
+            pass
+    return out

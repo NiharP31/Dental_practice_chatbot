@@ -20,9 +20,10 @@ RED_FLAGS = re.compile(r"""
   | (hit|punched|kicked|struck)\s+(me\s+)?(in|on)\s+the\s+(face|jaw|mouth) | (car|bike)\s+accident
 """, re.I | re.X)
 
-EMERGENCY_911 = ("If you're having trouble breathing or swallowing, swelling that's spreading, bleeding that "
-                 "won't stop, or a jaw injury, please call 911 or go to the nearest emergency room right now. "
-                 "I've alerted our team as urgent too.\n\n")
+# Written by code, not the model, so it's always there and always says the same safe thing.
+EMERGENCY_911 = ("I'm so sorry, that sounds really frightening. Symptoms like these can get serious quickly, so "
+                 "please call 911 or go to the nearest emergency room now, and please don't wait for a dental "
+                 "appointment. I've also let our dental team know it's urgent, so they can follow up with you.\n\n")
 
 # Claims that an action happened. Reading back an existing appointment ("you have a cleaning on...")
 # doesn't match; the system prompt steers the model to that phrasing.

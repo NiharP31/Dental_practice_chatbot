@@ -55,3 +55,18 @@ def _no_external_side_effects(monkeypatch):
     # A developer's .env must not make tests post to Slack or lock the staff API.
     monkeypatch.setattr(config, "SLACK_WEBHOOK_URL", "")
     monkeypatch.setattr(config, "STAFF_TOKEN", "")
+
+
+def patient_says(db, session_id: str, text: str) -> None:
+    """Record a patient message, as run_turn does before any tool runs (DOB provenance reads these)."""
+    from app.tools import get_conversation
+    conv = get_conversation(db, session_id)
+    conv.messages = [*(conv.messages or []), {"role": "user", "text": text}]
+    db.commit()
+
+
+def verify(db, session_id: str, full_name: str, dob: str, **kw):
+    """The patient types their name and DOB, then the tool verifies them."""
+    from app.tools import verify_patient
+    patient_says(db, session_id, f"I'm {full_name}, born {dob}")
+    return verify_patient(db, session_id, full_name, dob, now=kw.pop("now", NOW), **kw)

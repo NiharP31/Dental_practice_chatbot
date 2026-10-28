@@ -165,10 +165,12 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
     # The clock rides on the user turn, not the system prompt, so the system prompt stays cacheable.
     text += clock_note(now)
     if red:
-        text += (NOTE_MARKER + " red-flag symptoms detected. The patient has already been told to call 911 / go "
-                 "to the ER and staff were alerted as urgent. Don't repeat the 911 advice; be calm and brief, ask "
-                 "what happened if unclear, and offer the soonest emergency slot.]")
+        text += (NOTE_MARKER + " red-flag symptoms detected. Your reply is shown right after a message that "
+                 "already told the patient to call 911 / go to the ER and that staff were alerted as urgent. Don't "
+                 "repeat either. Be calm, kind and brief: their safety comes first, so don't offer to book unless "
+                 "they say they're OK or ask for an appointment. You can ask whether someone is with them.]")
     history.append({"role": "user", "text": text})
+    conv.messages = list(history)  # tools (verify_patient's DOB provenance) read this turn's patient text
 
     specs, reply, answered_by = tool_schemas(), None, []
     try:

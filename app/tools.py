@@ -14,8 +14,9 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app import config, guard
-from app.dates import ToolError, UnclearDate, Window, fmt_slot, resolve_when
+from app.dates import ToolError, UnclearDate, Window, fmt_slot, full_dates_in, resolve_when
 from app.db import Appointment, Conversation, IdempotencyKey, Patient, Slot, StaffAlert
+from app.prompt import NOTE_MARKER
 
 __all__ = ["ToolError", "UnclearDate", "verify_patient", "register_patient", "find_slots", "book",
            "modify", "notify_staff", "get_conversation"]
@@ -107,13 +108,22 @@ def verify_patient(db: Session, session_id: str, full_name: str, dob: str, now: 
     if failures >= MAX_VERIFY_FAILURES:
         raise ToolError("verify_locked", f"Too many failed attempts. Offer a staff callback or {config.OFFICE_PHONE}.")
     d = _parse_dob(dob)
+    no_match = {"verified": False, "message": "No patient matches that name and date of birth."}
+    # Provenance: the DOB must be one the patient typed in this session. A model talked into
+    # "verifying" someone (or guessing) can't supply it. Not counted against the lockout: it's the
+    # model's mistake, not a guess by the person chatting.
+    said = set().union(*(full_dates_in(m["text"].split(NOTE_MARKER)[0])
+                         for m in conv.messages or [] if m["role"] == "user"))
+    if d not in said:
+        log.warning("dob_not_from_patient session=%s", session_id)
+        return no_match
     patient = db.scalar(select(Patient).where(
         func.lower(Patient.full_name) == _clean_name(full_name).lower(), Patient.dob == d))
     if patient is None:
         set_state(conv, verify_failures=failures + 1)
         db.commit()
         # Same answer whether the name exists or not: don't leak who is a patient.
-        return {"verified": False, "message": "No patient matches that name and date of birth."}
+        return no_match
     _mark_verified(conv, patient.id)
     db.commit()
     dependents = db.scalars(select(Patient).where(Patient.guardian_id == patient.id).order_by(Patient.id))
