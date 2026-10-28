@@ -40,8 +40,8 @@ def add_day(db, day: date, booked: set[str] = frozenset()) -> dict[str, int]:
     return ids
 
 
-def add_patient(db, name="Daniel Reyes", dob=date(1984, 3, 12), insurance="Delta Dental") -> int:
-    p = Patient(full_name=name, phone="5550101001", dob=dob, insurance=insurance)
+def add_patient(db, name="Daniel Reyes", dob=date(1984, 3, 12), insurance="Delta Dental", guardian_id=None) -> int:
+    p = Patient(full_name=name, phone="5550101001", dob=dob, insurance=insurance, guardian_id=guardian_id)
     db.add(p)
     db.commit()
     return p.id

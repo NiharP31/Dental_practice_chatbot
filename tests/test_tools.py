@@ -242,3 +242,69 @@ def test_notify_staff_writes_alert(db):
     assert r["alerted"] and db.get(StaffAlert, r["alert_id"]).priority == "urgent"
     with pytest.raises(ToolError):
         notify_staff(db, "s1", "whenever", "x")
+
+
+# --- idempotency fingerprint --------------------------------------------------------------
+
+def test_two_different_bookings_in_one_turn_both_persist_and_retries_replay(db):
+    ids = add_day(db, THU)
+    pid = verified(db)
+    a = book(db, "s1", 4, [pid], [ids["09:00"]], "cleaning", now=NOW)
+    b = book(db, "s1", 4, [pid], [ids["14:00"]], "checkup", now=NOW)
+    assert a["appointments"][0]["appointment_id"] != b["appointments"][0]["appointment_id"]
+    assert "replayed" not in a and "replayed" not in b
+    assert book(db, "s1", 4, [pid], [ids["14:00"]], "checkup", now=NOW) == {**b, "replayed": True}
+    assert book(db, "s1", 4, [pid], [ids["09:00"]], "cleaning", now=NOW) == {**a, "replayed": True}
+    assert db.query(Appointment).count() == 2 and db.query(IdempotencyKey).count() == 2
+
+
+# --- households ---------------------------------------------------------------------------
+
+def _household(db):
+    parent = verified(db, name="Priya Shah", dob=date(1980, 11, 2))
+    kids = [add_patient(db, name=n, dob=d, guardian_id=parent)
+            for n, d in (("Arjun Shah", date(2014, 5, 19)), ("Anika Shah", date(2017, 9, 8)))]
+    return parent, kids
+
+
+def test_guardian_books_for_dependents_without_verifying_them(db):
+    ids = add_day(db, THU)
+    parent, kids = _household(db)
+    v = verify_patient(db, "s1", "Priya Shah", "1980-11-02", now=NOW)
+    assert [d["full_name"] for d in v["dependents"]] == ["Arjun Shah", "Anika Shah"]
+    r = book(db, "s1", 2, [parent, *kids], [ids["10:00"], ids["10:30"], ids["11:00"]], "cleaning", now=NOW)
+    assert len(r["appointments"]) == 3
+    # ...and can cancel a dependent's appointment too
+    kid_appt = r["appointments"][1]["appointment_id"]
+    modify(db, "s1", 3, kid_appt, "cancel", now=NOW)
+    assert modify(db, "s1", 4, kid_appt, "cancel", confirm=True, now=NOW)["done"]
+
+
+def test_dependent_link_does_not_work_in_reverse_or_for_strangers(db):
+    ids = add_day(db, THU)
+    parent, kids = _household(db)
+    verify_patient(db, "kid", "Arjun Shah", "2014-05-19", now=NOW)
+    with pytest.raises(ToolError):
+        book(db, "kid", 1, [parent], [ids["09:00"]], "cleaning", now=NOW)
+    with pytest.raises(ToolError):
+        book(db, "stranger", 1, [kids[0]], [ids["09:00"]], "cleaning", now=NOW)
+
+
+def test_spouses_verify_separately(db):
+    ids = add_day(db, THU)
+    daniel = verified(db)
+    maria = add_patient(db, name="Maria Reyes", dob=date(1986, 7, 25))
+    with pytest.raises(ToolError) as e:
+        book(db, "s1", 1, [daniel, maria], [ids["09:00"], ids["09:30"]], "cleaning", now=NOW)
+    assert e.value.code == "not_verified"
+    assert verify_patient(db, "s1", "Maria Reyes", "1986-07-25", now=NOW)["verified"]
+    assert book(db, "s1", 2, [daniel, maria], [ids["09:00"], ids["09:30"]], "cleaning", now=NOW)["booked"]
+
+
+def test_register_child_under_verified_guardian(db):
+    parent, _ = _household(db)
+    with pytest.raises(ToolError):
+        register_patient(db, "other", "Kiran Shah", "5550101003", "2020-02-02", "Cigna", guardian_id=parent)
+    r = register_patient(db, "s1", "Kiran Shah", "5550101003", "2020-02-02", "Cigna", guardian_id=parent)
+    v = verify_patient(db, "s2", "Priya Shah", "1980-11-02", now=NOW)
+    assert r["patient_id"] in [d["patient_id"] for d in v["dependents"]]

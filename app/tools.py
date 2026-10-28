@@ -1,6 +1,8 @@
 """Everything the agent can do to patient data. Plain typed functions; each one validates its own
 inputs, enforces identity checks, and owns its transaction. Errors raise ToolError(code, message)
 for the agent loop to hand back to the model."""
+import hashlib
+import json
 import re
 from datetime import date, datetime, time, timedelta
 from itertools import pairwise
@@ -42,6 +44,14 @@ def _verified_ids(conv: Conversation) -> set[int]:
 
 def _mark_verified(conv: Conversation, patient_id: int) -> None:
     _set_state(conv, verified=sorted(_verified_ids(conv) | {patient_id}))
+
+
+def _authorized_ids(db: Session, conv: Conversation) -> set[int]:
+    """Patients this session may act for: those verified/registered here plus their dependents."""
+    verified = _verified_ids(conv)
+    if not verified:
+        return set()
+    return verified | set(db.scalars(select(Patient.id).where(Patient.guardian_id.in_(verified))))
 
 
 # --- parsing helpers ----------------------------------------------------------------------
@@ -93,12 +103,17 @@ def verify_patient(db: Session, session_id: str, full_name: str, dob: str, now: 
         return {"verified": False, "message": "No patient matches that name and date of birth."}
     _mark_verified(conv, patient.id)
     db.commit()
+    dependents = db.scalars(select(Patient).where(Patient.guardian_id == patient.id).order_by(Patient.id))
     return {"verified": True, "patient_id": patient.id, "full_name": patient.full_name,
-            "insurance": patient.insurance, "upcoming": _upcoming(db, patient.id, now)}
+            "insurance": patient.insurance, "upcoming": _upcoming(db, patient.id, now),
+            "dependents": [{"patient_id": d.id, "full_name": d.full_name, "upcoming": _upcoming(db, d.id, now)}
+                           for d in dependents]}
 
 
-def register_patient(db: Session, session_id: str, full_name: str, phone: str, dob: str, insurance: str) -> dict:
-    """New patient. insurance is the plan name, or "none" for self-pay."""
+def register_patient(db: Session, session_id: str, full_name: str, phone: str, dob: str, insurance: str,
+                     guardian_id: int | None = None) -> dict:
+    """New patient. insurance is the plan name, or "none" for self-pay. guardian_id links a child
+    to a parent verified in this session so the parent can manage their appointments later."""
     name = _clean_name(full_name)
     if len(name.split()) < 2:
         raise ToolError("bad_name", "Need the patient's full first and last name.")
@@ -115,13 +130,15 @@ def register_patient(db: Session, session_id: str, full_name: str, phone: str, d
         ins = "none"
 
     conv = get_conversation(db, session_id)
+    if guardian_id is not None and guardian_id not in _verified_ids(conv):
+        raise ToolError("not_verified", "The guardian must be verified (name + DOB) in this conversation first.")
     existing = db.scalar(select(Patient).where(func.lower(Patient.full_name) == name.lower(), Patient.dob == d))
     if existing:
         # Name + DOB is our identity check, so this person is effectively verified.
         _mark_verified(conv, existing.id)
         db.commit()
         return {"patient_id": existing.id, "full_name": existing.full_name, "already_registered": True}
-    patient = Patient(full_name=name, phone=digits, dob=d, insurance=ins)
+    patient = Patient(full_name=name, phone=digits, dob=d, insurance=ins, guardian_id=guardian_id)
     db.add(patient)
     db.flush()
     _mark_verified(conv, patient.id)
@@ -176,8 +193,11 @@ def _open_runs(db: Session, w: Window, count: int, now: datetime, exclude: set[i
 
 def book(db: Session, session_id: str, turn: int, patient_ids: list[int], slot_ids: list[int],
          appt_type: str, notes: str = "", now: datetime | None = None) -> dict:
-    """Book one or more patients (patient_ids[i] -> slot_ids[i]) in one all-or-nothing transaction."""
-    key = f"{session_id}:{turn}"
+    """Book one or more patients (patient_ids[i] -> slot_ids[i]) in one all-or-nothing transaction.
+    Idempotent per (session, turn, request): a retried call replays; a different booking in the
+    same turn is a new booking."""
+    fingerprint = hashlib.sha256(json.dumps([sorted(slot_ids), sorted(patient_ids), appt_type]).encode()).hexdigest()
+    key = f"{session_id}:{turn}:{fingerprint[:16]}"
     if prior := db.get(IdempotencyKey, key):
         return {**prior.result, "replayed": True}
     now = now or config.office_now()
@@ -188,8 +208,9 @@ def book(db: Session, session_id: str, turn: int, patient_ids: list[int], slot_i
     if len(set(slot_ids)) != len(slot_ids) or len(set(patient_ids)) != len(patient_ids):
         raise ToolError("bad_args", "Each patient and each slot can appear only once.")
     conv = get_conversation(db, session_id)
-    if not set(patient_ids) <= _verified_ids(conv):
-        raise ToolError("not_verified", "Every patient must be verified (name + DOB) or registered first.")
+    if not set(patient_ids) <= _authorized_ids(db, conv):
+        raise ToolError("not_verified", "Every patient must be verified (name + DOB), registered, "
+                                        "or a dependent of a verified guardian first.")
 
     try:
         booked = []
@@ -224,7 +245,7 @@ def modify(db: Session, session_id: str, turn: int, appointment_id: int, action:
         raise ToolError("bad_action", 'action must be "cancel" or "reschedule".')
     conv = get_conversation(db, session_id)
     appt = db.get(Appointment, appointment_id)
-    if appt is None or appt.patient_id not in _verified_ids(conv):
+    if appt is None or appt.patient_id not in _authorized_ids(db, conv):
         # Same error for "doesn't exist" and "not yours": don't leak appointment ids.
         raise ToolError("not_verified", "Verify the patient's name and date of birth first.")
 

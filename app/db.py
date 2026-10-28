@@ -23,6 +23,8 @@ class Patient(Base):
     phone: Mapped[str] = mapped_column(String(20))
     dob: Mapped[date]
     insurance: Mapped[str] = mapped_column(String(200))  # "none" for self-pay
+    # Household link: a verified guardian may book/modify for dependents. Spouses aren't linked.
+    guardian_id: Mapped[int | None] = mapped_column(ForeignKey("patients.id"), index=True, default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
@@ -66,7 +68,7 @@ class Conversation(Base):
 
 class IdempotencyKey(Base):
     __tablename__ = "idempotency_keys"
-    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)  # session:turn:fingerprint
     result: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 

@@ -23,6 +23,7 @@ PATIENTS = [
     # uninsured
     ("Tom Becker", "5550101004", date(1992, 1, 30), "none", "cleaning", 4, 11),
 ]
+GUARDIANS = {"Arjun Shah": "Priya Shah", "Anika Shah": "Priya Shah"}  # dependent -> guardian
 
 
 def ensure_slots(db: Session, today: date, rng: random.Random) -> int:
@@ -52,10 +53,12 @@ def _next_open_day(today: date, offset: int) -> date:
 def ensure_patients(db: Session, today: date) -> int:
     if db.scalar(select(func.count(Patient.id))):
         return 0
+    ids = {}
     for name, phone, dob, insurance, appt_type, offset, hour in PATIENTS:
-        p = Patient(full_name=name, phone=phone, dob=dob, insurance=insurance)
+        p = Patient(full_name=name, phone=phone, dob=dob, insurance=insurance, guardian_id=ids.get(GUARDIANS.get(name)))
         db.add(p)
         db.flush()
+        ids[name] = p.id
         slot = db.scalar(select(Slot).where(Slot.start == datetime.combine(_next_open_day(today, offset), time(hour))))
         slot.status = "booked"
         db.add(Appointment(patient_id=p.id, slot_id=slot.id, appt_type=appt_type))
