@@ -81,3 +81,51 @@ def test_registration_turn_allows_all_set_but_not_booking_claims():
     # Gemini eval regression: registration + options in one reply. "All set up" is never a booking claim.
     setup = "Thanks, Sam! You're all set up in our system. Here are cleanings next week: Monday, November 9 at 8:00 AM"
     assert guard.check_reply(setup, False, "s", registered=True) == setup
+
+
+ALERT_CLAIMS = [
+    "I've let our dental team know it's urgent.",
+    "I have notified our staff about your tooth.",
+    "I've alerted the team.",
+    "Our team has been told about your emergency.",
+    "I've passed along your details to the dentist.",
+    "I've notified the team and they'll call shortly.",
+    "The dental team has been notified.",
+    "I let the office staff know what happened.",
+    "I've informed our team about the swelling.",
+    "Staff have been alerted and are aware.",
+]
+NOT_ALERT_CLAIMS = [
+    "Would you like me to let our team know?",
+    "I can notify our staff if you'd like.",
+    "I'll let the team know once you confirm.",
+    "Please let our team know if anything changes.",
+    "Our team will call you to confirm.",
+    "Should I pass this along to the team?",
+    "I haven't notified the staff yet.",
+    "Do you want me to alert the team?",
+    "Our staff are happy to help with insurance questions.",
+    "Let me know your full name and date of birth.",
+]
+
+
+@pytest.mark.parametrize("reply", ALERT_CLAIMS)
+def test_alert_claims_detected(reply):
+    assert guard.alert_claims(reply)
+
+
+@pytest.mark.parametrize("reply", NOT_ALERT_CLAIMS)
+def test_not_alert_claims(reply):
+    assert not guard.alert_claims(reply)
+
+
+def test_unbacked_alert_claim_is_removed_and_callback_offered(caplog):
+    """CI eval regression: 'I've let our dental team know it's urgent' with no notify_staff call."""
+    reply = "I'm so sorry about your tooth. I've let our dental team know it's urgent. Can I get your full name?"
+    with caplog.at_level("WARNING", logger="guard"):
+        out = guard.check_reply(reply, False, "s", alerted=False)
+    assert "let our dental team know" not in out
+    assert out.startswith("I'm so sorry about your tooth.") and "Can I get your full name?" in out
+    assert out.endswith(guard.ALERT_OFFER)
+    assert any("unbacked_alert_claim" in m for m in caplog.messages)
+    assert guard.check_reply(reply, False, "s", alerted=True) == reply  # backed by a staff_alerts row

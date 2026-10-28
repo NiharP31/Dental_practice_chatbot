@@ -72,7 +72,7 @@ async function load() {
       <div class="card ${a.priority === "urgent" ? "urgent" : ""}">
         <div class="row">
           <div><span class="badge">${esc(a.priority.toUpperCase())}</span>
-            <span class="meta">${esc(when(a.created_at))} · session ${esc(a.session_id)}</span>
+            <span class="meta">${esc(when(a.created_at))} · ${a.patient ? esc(a.patient) : "not yet identified"} · session ${esc(a.session_id)}</span>
             <p>${esc(a.summary)}</p></div>
           <button onclick="act('/api/alerts/${a.id}/resolve')">Mark handled</button>
         </div>

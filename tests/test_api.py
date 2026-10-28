@@ -142,3 +142,19 @@ def test_supabase_project_url_is_rejected_with_a_clear_message():
     from app.db import make_engine
     with pytest.raises(ValueError, match="Transaction pooler"):
         make_engine("https://abcdefgh.supabase.co")
+
+
+def test_migrate_adds_staff_alerts_patient_id_to_an_existing_table(tmp_path):
+    """Supabase already has staff_alerts without patient_id; create_all won't add it."""
+    from sqlalchemy import inspect, text
+
+    from app.db import Base, make_engine, migrate
+    engine = make_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    Base.metadata.create_all(engine)
+    with engine.begin() as c:  # simulate the pre-change schema
+        c.execute(text("DROP TABLE staff_alerts"))
+        c.execute(text("CREATE TABLE staff_alerts (id INTEGER PRIMARY KEY, session_id VARCHAR(64), priority VARCHAR(10), "
+                       "summary TEXT, status VARCHAR(10), created_at DATETIME)"))
+    assert migrate(engine) == ["staff_alerts.patient_id"]
+    assert "patient_id" in {c["name"] for c in inspect(engine).get_columns("staff_alerts")}
+    assert migrate(engine) == []  # idempotent

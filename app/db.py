@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 
-from sqlalchemy import JSON, Boolean, ForeignKey, String, Text, create_engine, event, make_url
+from sqlalchemy import JSON, Boolean, ForeignKey, String, Text, create_engine, event, inspect, make_url, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -52,6 +52,8 @@ class StaffAlert(Base):
     __tablename__ = "staff_alerts"
     id: Mapped[int] = mapped_column(primary_key=True)
     session_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Null until the person registers or verifies; alerts can't wait for that in an emergency.
+    patient_id: Mapped[int | None] = mapped_column(ForeignKey("patients.id"), default=None)
     priority: Mapped[str] = mapped_column(String(10))  # urgent | normal
     summary: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(10), default="open")  # open | resolved
@@ -97,6 +99,22 @@ class LlmUsage(Base):
     cache_write_tokens: Mapped[int] = mapped_column(default=0)
     cost_usd: Mapped[float] = mapped_column(default=0.0)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+# create_all only creates missing tables. Columns added after a table exists in production go here.
+# ponytail: hand-rolled, additive-only; switch to Alembic at the first rename/drop/backfill.
+ADDED_COLUMNS = [("staff_alerts", "patient_id", "INTEGER REFERENCES patients(id)")]
+
+
+def migrate(engine) -> list[str]:
+    """Add any ADDED_COLUMNS that an existing table lacks. Idempotent; never drops anything."""
+    insp, added = inspect(engine), []
+    with engine.begin() as conn:
+        for table, column, ddl in ADDED_COLUMNS:
+            if table in insp.get_table_names() and column not in {c["name"] for c in insp.get_columns(table)}:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+                added.append(f"{table}.{column}")
+    return added
 
 
 def make_engine(url: str):

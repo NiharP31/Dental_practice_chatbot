@@ -56,6 +56,32 @@ _MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
 _MONTH_DAY = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b", re.I)
 _WEEKDAY = re.compile(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
 
+# "Staff have been told" claims. Checked per sentence; questions, offers and promises don't count.
+ALERT_CLAIM = re.compile(r"""
+    \blet\s+(our|the|your)\s+(\w+\s+){0,2}(team|staff|dentist|doctor|office|hygienist)\s+know\b
+  | \b(notified|alerted|informed|told|contacted|messaged|flagged\ this\ (to|for))\s+(our|the)\s+(\w+\s+){0,2}
+    (team|staff|dentist|doctor|office|hygienist)\b
+  | \b(team|staff|dentist|doctor|office)\s+(has|have|is|are)\s+(now\s+|already\s+)?(been\s+)?
+    (notified|alerted|informed|told|made\ aware|contacted|aware)\b
+  | \bpassed\s+(it|this|that|everything|(your|the)\s+\w+(\s+\w+)?)?\s*along\b
+""", re.I | re.X)
+# Words before the claim that turn it into an offer, promise, condition or denial.
+NOT_A_CLAIM = re.compile(r"\b(will|ll|can|could|would|should|shall|may|might|if|once|please|want\s+me|like\s+me"
+                         r"|haven'?t|hasn'?t|have\s+not|has\s+not|not\s+yet)\b", re.I)
+ALERT_OFFER = "Would you like me to have a member of our team reach out to you about this?"
+
+
+def alert_claims(reply: str) -> list[str]:
+    """Sentences that say staff have already been told."""
+    out = []
+    for s in re.split(r"(?<=[.!?])\s+|\n+", reply):
+        m = ALERT_CLAIM.search(s)
+        if m and not s.rstrip().endswith("?") and not NOT_A_CLAIM.search(s[:m.start()]) \
+                and not re.search(r"\b(yet|not)\b", s[m.end():], re.I):
+            out.append(s)
+    return out
+
+
 MEDICAL = re.compile(r"""
     \b\d+\s?mg\b | \b(ibuprofen|advil|motrin|tylenol|acetaminophen|aspirin|naproxen|aleve|antibiotics?|amoxicillin|penicillin|orajel|benzocaine)\b
   | \b(salt\s?water|warm\s+water)\s+rinse | \brinse\s+with\b | \b(ice\s+pack|cold\s+compress|clove\s+oil)\b
@@ -90,7 +116,8 @@ def claim_backed(reply: str, booked: set[date]) -> bool:
 
 
 def check_reply(reply: str, action_succeeded: bool, session_id: str,
-                booked: set[date] = frozenset(), registered: bool = False, action_failed: bool = False) -> str:
+                booked: set[date] = frozenset(), registered: bool = False, action_failed: bool = False,
+                alerted: bool = True) -> str:
     """Last line of defence on the model's final reply. A claim is backed by a successful book/modify
     this turn, or by restating appointments that exist (claim_backed). After a successful
     registration, "you're all set in our system" is true, as long as it doesn't also talk about an
@@ -102,6 +129,14 @@ def check_reply(reply: str, action_succeeded: bool, session_id: str,
         if not restates and not registration_only:
             log.warning("unbacked_claim session=%s reply=%r", session_id, redact(reply[:300]))
             return UNBACKED_REPLY
+    if not alerted and (claims := alert_claims(reply)):
+        # "I've let our team know" with no staff_alerts row this session: drop those sentences and
+        # offer the callback instead, so the patient never waits on a call nobody was asked to make.
+        log.warning("unbacked_alert_claim session=%s reply=%r", session_id, redact(reply[:300]))
+        for c in claims:
+            reply = reply.replace(c, "")
+        reply = (re.sub(r"[ \t]{2,}|\n{3,}", lambda m: "\n\n" if "\n" in m[0] else " ", reply).strip()
+                 + "\n\n" + ALERT_OFFER).strip()
     if MEDICAL.search(reply):
         log.warning("medical_advice_blocked session=%s reply=%r", session_id, redact(reply[:300]))
         return MEDICAL_REPLY

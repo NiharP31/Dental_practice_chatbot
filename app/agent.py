@@ -201,7 +201,8 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
             reply = "Done: " + "; ".join(t.confirmations) + f". If you need anything else, call us at {config.OFFICE_PHONE}."
     reply = prefix + guard.check_reply(reply, t.action_succeeded, session_id,
                                        tools.session_booked_days(db, session_id, now), registered=t.registered,
-                                       action_failed=t.action_failed)
+                                       action_failed=t.action_failed,
+                                       alerted=tools.session_has_alert(db, session_id))
 
     if history[-1]["role"] == "assistant" and not history[-1]["tool_calls"]:
         history[-1] = {**history[-1], "text": reply}  # keep what the patient actually saw

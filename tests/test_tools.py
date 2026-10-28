@@ -335,3 +335,37 @@ def test_register_child_under_verified_guardian(db):
     r = register_patient(db, "s1", "Kiran Shah", "5550101003", "2020-02-02", "Cigna", guardian_id=parent)
     v = verify(db, "s2", "Priya Shah", "1980-11-02")
     assert r["patient_id"] in [d["patient_id"] for d in v["dependents"]]
+
+
+# --- staff alerts before identification ----------------------------------------------------
+
+def test_alert_before_registration_gets_patient_attached_later(db):
+    a = notify_staff(db, "s1", "urgent", "Cracked molar, pain 7/10")
+    assert db.get(StaffAlert, a["alert_id"]).patient_id is None
+    pid = register_patient(db, "s1", "Jordan Lee", "5553012244", "1995-02-14", "Cigna")["patient_id"]
+    assert db.get(StaffAlert, a["alert_id"]).patient_id == pid
+    assert notify_staff(db, "other", "normal", "Billing question")  # other sessions untouched
+    assert db.query(StaffAlert).filter_by(session_id="other").one().patient_id is None
+
+
+def test_alert_after_verification_carries_patient(db):
+    pid = verified(db)
+    a = notify_staff(db, "s1", "normal", "Wants a callback")
+    assert db.get(StaffAlert, a["alert_id"]).patient_id == pid
+
+
+def test_emergency_booking_creates_urgent_alert_if_session_has_none(db):
+    ids = add_day(db, THU)
+    pid = verified(db)
+    book(db, "s1", 1, [pid], [ids["09:00"]], "emergency", notes="Knocked out front tooth at soccer", now=NOW)
+    [alert] = db.query(StaffAlert).all()
+    assert alert.priority == "urgent" and "Knocked out front tooth" in alert.summary and alert.patient_id == pid
+    book(db, "s1", 1, [pid], [ids["09:00"]], "emergency", notes="x", now=NOW)  # idempotent replay
+    book(db, "s1", 2, [pid], [ids["10:00"]], "emergency", now=NOW)  # session already has an urgent alert
+    assert db.query(StaffAlert).count() == 1
+
+
+def test_non_emergency_booking_creates_no_alert(db):
+    ids = add_day(db, THU)
+    book(db, "s1", 1, [verified(db)], [ids["09:00"]], "cleaning", now=NOW)
+    assert db.query(StaffAlert).count() == 0

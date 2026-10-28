@@ -1,11 +1,16 @@
 import os
-from datetime import date, datetime, time, timedelta
 
-import pytest
-from sqlalchemy.orm import sessionmaker
+# Before any app import: .env may point at production Supabase, and nothing in the test run may
+# touch it (load_dotenv doesn't override variables that are already set).
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
-from app import config
-from app.db import LOCAL_HOSTS, Base, Patient, Slot, make_engine
+from datetime import date, datetime, time, timedelta  # noqa: E402
+
+import pytest  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+
+from app import config  # noqa: E402
+from app.db import LOCAL_HOSTS, Base, Patient, Slot, make_engine  # noqa: E402
 
 NOW = datetime(2026, 10, 28, 9, 0)  # Wednesday
 

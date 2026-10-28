@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import config
-from app.db import Appointment, Base, Patient, SessionLocal, Slot, engine
+from app.db import Appointment, Base, Patient, SessionLocal, Slot, engine, migrate
 
 WEEKS = 4
 BOOKED_FRACTION = 0.3
@@ -76,8 +76,9 @@ def seed(db: Session, today: date | None = None, rng_seed: int = 42) -> dict:
 
 def init_db() -> dict:
     Base.metadata.create_all(engine)
+    added = migrate(engine)
     with SessionLocal() as db:
-        return seed(db)
+        return {**seed(db), "columns_added": added}
 
 
 if __name__ == "__main__":

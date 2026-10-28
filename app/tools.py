@@ -48,8 +48,18 @@ def _verified_ids(conv: Conversation) -> set[int]:
     return set((conv.state or {}).get("verified", []))
 
 
-def _mark_verified(conv: Conversation, patient_id: int) -> None:
+def _mark_verified(db: Session, conv: Conversation, patient_id: int) -> None:
     set_state(conv, verified=sorted(_verified_ids(conv) | {patient_id}))
+    # Alerts raised before we knew who this was (e.g. an emergency) now get their patient.
+    db.execute(update(StaffAlert).where(StaffAlert.session_id == conv.session_id, StaffAlert.patient_id.is_(None))
+               .values(patient_id=patient_id))
+
+
+def session_has_alert(db: Session, session_id: str, priority: str | None = None) -> bool:
+    q = select(StaffAlert.id).where(StaffAlert.session_id == session_id)
+    if priority:
+        q = q.where(StaffAlert.priority == priority)
+    return db.scalar(q.limit(1)) is not None
 
 
 def _authorized_ids(db: Session, conv: Conversation) -> set[int]:
@@ -124,7 +134,7 @@ def verify_patient(db: Session, session_id: str, full_name: str, dob: str, now: 
         db.commit()
         # Same answer whether the name exists or not: don't leak who is a patient.
         return no_match
-    _mark_verified(conv, patient.id)
+    _mark_verified(db, conv, patient.id)
     db.commit()
     dependents = db.scalars(select(Patient).where(Patient.guardian_id == patient.id).order_by(Patient.id))
     result = {"verified": True, "patient_id": patient.id, "full_name": patient.full_name,
@@ -164,13 +174,13 @@ def register_patient(db: Session, session_id: str, full_name: str, phone: str, d
     existing = db.scalar(select(Patient).where(func.lower(Patient.full_name) == name.lower(), Patient.dob == d))
     if existing:
         # Name + DOB is our identity check, so this person is effectively verified.
-        _mark_verified(conv, existing.id)
+        _mark_verified(db, conv, existing.id)
         db.commit()
         return {"patient_id": existing.id, "full_name": existing.full_name, "already_registered": True}
     patient = Patient(full_name=name, phone=digits, dob=d, insurance=ins, guardian_id=guardian_id)
     db.add(patient)
     db.flush()
-    _mark_verified(conv, patient.id)
+    _mark_verified(db, conv, patient.id)
     db.commit()
     return {"patient_id": patient.id, "full_name": name, "insurance": ins, "registered": True}
 
@@ -259,10 +269,15 @@ def book(db: Session, session_id: str, turn: int, patient_ids: list[int], slot_i
         result = {"booked": True, "appointments": booked}
         db.add(IdempotencyKey(key=key, result=result))
         db.commit()
-        return result
     except Exception:
         db.rollback()
         raise
+    if appt_type == "emergency" and not session_has_alert(db, session_id, "urgent"):
+        # Backstop: an emergency must reach staff even if the model never called notify_staff.
+        visits = "; ".join(f"{a['patient']} on {a['when']}" for a in booked)
+        notify_staff(db, session_id, "urgent", f"Emergency appointment booked in chat: {visits}. "
+                                               f"Patient's description: {notes.strip() or 'not given'}")
+    return result
 
 
 def modify(db: Session, session_id: str, turn: int, appointment_id: int, action: str,
@@ -326,12 +341,15 @@ def modify(db: Session, session_id: str, turn: int, appointment_id: int, action:
 
 
 def notify_staff(db: Session, session_id: str, priority: str, summary: str) -> dict:
-    """Write a staff alert. The DB row is the source of truth; Slack is best-effort on top."""
+    """Write a staff alert. The DB row is the source of truth; Slack is best-effort on top. Works
+    before anyone is identified; the alert is linked to the patient once they verify or register."""
     if priority not in ("urgent", "normal"):
         raise ToolError("bad_priority", 'priority must be "urgent" or "normal".')
     if not summary.strip():
         raise ToolError("bad_summary", "Summarize what the staff need to know.")
-    alert = StaffAlert(session_id=session_id, priority=priority, summary=summary.strip()[:2000])
+    known = sorted(_verified_ids(get_conversation(db, session_id)))
+    alert = StaffAlert(session_id=session_id, priority=priority, summary=summary.strip()[:2000],
+                       patient_id=known[0] if known else None)
     db.add(alert)
     db.commit()
     if config.SLACK_WEBHOOK_URL:

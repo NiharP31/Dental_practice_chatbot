@@ -404,3 +404,22 @@ def test_injected_verification_with_a_dob_the_patient_never_typed_is_refused(db,
     assert results[0] == {"verified": False, "message": "No patient matches that name and date of birth."}
     assert results[1]["error"] == "not_verified"
     assert (db.get(Conversation, "sess-inj").state or {}).get("verify_failures", 0) == 0
+
+
+def test_alert_claim_without_notify_staff_is_removed(db, script):
+    """CI eval failure: the model said it told the team, but never called notify_staff."""
+    queue, _ = script
+    queue.append(say("I'm sorry, that sounds painful. I've let our dental team know it's urgent. What's your full name?"))
+    r = agent.run_turn(db, "sess-al1", "I cracked a tooth and it really hurts", now=NOW)
+    assert "let our dental team know" not in r["reply"] and r["reply"].endswith(guard.ALERT_OFFER)
+    assert db.query(StaffAlert).count() == 0
+
+
+def test_alert_claim_after_notify_staff_is_kept(db, script):
+    queue, _ = script
+    queue += [call("notify_staff", priority="urgent", summary="Cracked tooth, severe pain"),
+              say("I've let our dental team know it's urgent. What's your full name?")]
+    r = agent.run_turn(db, "sess-al2", "I cracked a tooth and it really hurts", now=NOW)
+    assert r["reply"] == "I've let our dental team know it's urgent. What's your full name?"
+    [alert] = db.query(StaffAlert).all()
+    assert alert.priority == "urgent" and alert.patient_id is None  # nobody identified yet

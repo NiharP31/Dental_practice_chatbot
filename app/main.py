@@ -16,7 +16,7 @@ from sqlalchemy import case, select, text
 
 from app import config, guard, tools
 from app.agent import PATIENT_TAGS, RED_FLAG_NOTE_MARKER, run_turn
-from app.db import Conversation, Feedback, SessionLocal, StaffAlert
+from app.db import Conversation, Feedback, Patient, SessionLocal, StaffAlert
 from app.seed import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -167,9 +167,12 @@ def staff_data() -> dict:
                              .order_by(Conversation.updated_at.desc()).limit(50)).all()
         comments = {f.session_id: f.comment for f in db.scalars(
             select(Feedback).where(Feedback.rating == "down", Feedback.session_id.in_([c.session_id for c in flagged])))}
+        names = {p.id: p.full_name for p in db.scalars(
+            select(Patient).where(Patient.id.in_({a.patient_id for a in alerts if a.patient_id})))}
         return {
             "alerts": [{"id": a.id, "priority": a.priority, "summary": a.summary, "session_id": a.session_id,
-                        "created_at": a.created_at.isoformat() + "Z"} for a in alerts],
+                        "patient": names.get(a.patient_id), "created_at": a.created_at.isoformat() + "Z"}
+                       for a in alerts],
             "flagged": [{"session_id": c.session_id, "updated_at": c.updated_at.isoformat() + "Z",
                          "comment": comments.get(c.session_id, ""),
                          "transcript": [{"role": m["role"], "text": visible(m["text"])} for m in c.messages
