@@ -1,0 +1,10 @@
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.venv/
+__pycache__/
+.pytest_cache/
+evals/results/
+assessment.pdf
