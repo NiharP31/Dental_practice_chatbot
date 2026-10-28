@@ -13,11 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
-from app import agent, config  # noqa: E402
-from app.db import Appointment, Base, Conversation, Patient, Slot, StaffAlert, make_engine  # noqa: E402
+from app import agent, config, llm  # noqa: E402
+from app.db import Appointment, Base, Conversation, LlmUsage, Patient, Slot, StaffAlert, make_engine  # noqa: E402
 from app.seed import seed  # noqa: E402
 
-config.LLM_MAX_RPM = config.LLM_MAX_RPM or 8
+
 
 
 class GuardCapture(logging.Handler):
@@ -94,6 +94,8 @@ def run(title, steps):
         print(f"\nPATIENT: {text}")
         for m in new:
             if m["role"] == "assistant":
+                if m.get("provider"):
+                    print(f"   [{m['provider']}]")
                 for c in m["tool_calls"]:
                     print(f"   -> tool {c['name']}({c['args']})")
             elif m["role"] == "tool":
@@ -106,13 +108,18 @@ def run(title, steps):
     logging.getLogger("guard").removeHandler(cap)
     with Session() as db:
         print("\nDB changes:\n" + "\n".join(diff(before, snapshot(db))))
+        calls = db.scalars(select(LlmUsage)).all()
+        print(f"\nLLM: {len(calls)} calls, est. ${sum(c.cost_usd for c in calls):.4f}, "
+              f"cache read/write tokens {sum(c.cache_read_tokens for c in calls)}/{sum(c.cache_write_tokens for c in calls)}")
     engine.dispose()
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING, format="   [%(name)s] %(message)s")
-    print(f"models: {config.GEMINI_MODEL} -> {config.GEMINI_FALLBACK_MODEL} -> "
-          f"{'deepseek' if config.DEEPSEEK_API_KEY else '(no deepseek key)'}; throttle {config.LLM_MAX_RPM}/min")
+    chain = llm.providers()
+    if not any(p.billed for p in chain):
+        config.LLM_MAX_RPM = config.LLM_MAX_RPM or 8  # free-tier Gemini only: stay under its per-minute cap
+    print(f"chain: {' -> '.join(p.name for p in chain) or '(none)'} -> canned; throttle {config.LLM_MAX_RPM or 'off'}/min")
     only = sys.argv[1:]  # e.g. `smoke.py 1 3` runs just those
     for title, steps in CONVERSATIONS.items():
         if not only or title.split(".")[0] in only:
