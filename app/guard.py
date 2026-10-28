@@ -2,6 +2,7 @@
 medical advice, and PHI redaction for logs."""
 import logging
 import re
+from datetime import date
 
 from app import config
 
@@ -26,7 +27,7 @@ EMERGENCY_911 = ("If you're having trouble breathing or swallowing, swelling tha
 # Claims that an action happened. Reading back an existing appointment ("you have a cleaning on...")
 # doesn't match; the system prompt steers the model to that phrasing.
 CLAIM = re.compile(r"""
-    \ball\ set\b
+    \ball\ set\b(?!\s+up)
   | \byou'?re\s+(all\s+)?(booked|confirmed|scheduled|rescheduled)\b
   | \b(i'?ve|i\ have|i\ just|we'?ve|we\ have)\s+(gone\ ahead\ and\s+)?(booked|scheduled|confirmed|reserved|cancel+ed|rescheduled|moved|made)\b
   | \b(has|have)\s+been\s+(successfully\s+)?(booked|scheduled|confirmed|reserved|cancel+ed|rescheduled|moved)\b
@@ -39,8 +40,20 @@ CLAIM = re.compile(r"""
 UNBACKED_REPLY = ("I'm sorry, I couldn't confirm that in our system just now, so please don't count on it yet. "
                   "Would you like me to check your appointments or try again?")
 
+# The subset of claims that say something was just done. These need an action this turn, or explicit
+# dates matching appointments that exist; a bare "I've booked you!" is never backed by old state.
+# ("You're all set!" is a state: models say it to restate a booking made a turn earlier.)
+ACTION_CLAIM = re.compile(r"""
+    \b(i'?ve|i\ have|i\ just|we'?ve|we\ have)\s+(gone\ ahead\ and\s+)?(booked|scheduled|confirmed|reserved|cancel+ed|rescheduled|moved|made)\b
+  | \b(has|have)\s+been\s+(successfully\s+)?(booked|scheduled|confirmed|reserved|cancel+ed|rescheduled|moved)\b
+  | \b(is|are)\s+now\s+(booked|confirmed|cancel+ed|rescheduled)\b
+  | \bsuccessfully\s+(booked|scheduled|cancel+ed|rescheduled)\b
+""", re.I | re.X)
+
+APPOINTMENT_WORDS = re.compile(r"book|appointment|schedul|cancel|visit|cleaning|checkup|\b(at|on)\s+\d", re.I)
 _MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 _MONTH_DAY = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b", re.I)
+_WEEKDAY = re.compile(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
 
 MEDICAL = re.compile(r"""
     \b\d+\s?mg\b | \b(ibuprofen|advil|motrin|tylenol|acetaminophen|aspirin|naproxen|aleve|antibiotics?|amoxicillin|penicillin|orajel|benzocaine)\b
@@ -60,14 +73,32 @@ def month_days(text: str) -> set[tuple[int, int]]:
     return {(_MONTHS.index(m[1].lower()[:3]) + 1, int(m[2])) for m in _MONTH_DAY.finditer(text)}
 
 
+def claim_backed(reply: str, booked: set[date]) -> bool:
+    """Does a claim restate appointments that exist? `booked` holds the dates of upcoming appointments
+    of patients this session may talk about. Every month-day and weekday the reply names must be one of
+    them. "You're all set for Nov 5" passes on its date; "the kids are booked Thursday" (a state, no
+    date) passes when it's true; "I've booked you!" with no date never passes on old state."""
+    if not booked:
+        return False
+    named = month_days(reply)
+    if not named <= {(d.month, d.day) for d in booked}:
+        return False
+    if not {w.lower() for w in _WEEKDAY.findall(reply)} <= {d.strftime("%A").lower() for d in booked}:
+        return False
+    return bool(named) or not ACTION_CLAIM.search(reply)
+
+
 def check_reply(reply: str, action_succeeded: bool, session_id: str,
-                booked_days: set[tuple[int, int]] = frozenset()) -> str:
+                booked: set[date] = frozenset(), registered: bool = False, action_failed: bool = False) -> str:
     """Last line of defence on the model's final reply. A claim is backed by a successful book/modify
-    this turn, or (for "you're already all set for Nov 5") by every date it names matching an upcoming
-    appointment of a patient verified in this session."""
+    this turn, or by restating appointments that exist (claim_backed). After a successful
+    registration, "you're all set in our system" is true, as long as it doesn't also talk about an
+    appointment. If a book/modify failed this turn, only a success counts: "all set!" right after a
+    slot_taken error is exactly the lie this guard exists for."""
     if CLAIM.search(reply) and not action_succeeded:
-        named = month_days(reply)
-        if not (named and named <= booked_days):
+        registration_only = registered and not APPOINTMENT_WORDS.search(reply)
+        restates = not action_failed and claim_backed(reply, booked)
+        if not restates and not registration_only:
             log.warning("unbacked_claim session=%s reply=%r", session_id, redact(reply[:300]))
             return UNBACKED_REPLY
     if MEDICAL.search(reply):

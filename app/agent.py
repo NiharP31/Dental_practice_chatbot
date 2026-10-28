@@ -70,6 +70,8 @@ class Turn:
     now: datetime
     options: list[dict] = field(default_factory=list)  # latest find_slots options -> UI quick replies
     action_succeeded: bool = False  # a book/modify actually changed (or replayed) something this turn
+    registered: bool = False  # register_patient succeeded this turn
+    action_failed: bool = False  # a book/modify returned an error this turn
     confirmations: list[str] = field(default_factory=list)
 
 
@@ -121,6 +123,10 @@ def dispatch(t: Turn, name: str, raw_args: dict) -> dict:
         result = {"error": "system_error", "message": f"Temporary system problem. Apologize and offer {config.OFFICE_PHONE}."}
     log.info("tool=%s session=%s args=%s error=%s", name, t.session_id, args, result.get("error"))
 
+    if name == "register_patient" and result.get("patient_id"):
+        t.registered = True
+    if name in ("book", "modify") and "error" in result:
+        t.action_failed = True
     if name == "find_slots" and "options" in result:
         t.options = result["options"]
     if name == "book" and result.get("booked"):
@@ -187,7 +193,8 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
         if t.confirmations:  # a change went through before the LLM failed: say so from the tool result
             reply = "Done: " + "; ".join(t.confirmations) + f". If you need anything else, call us at {config.OFFICE_PHONE}."
     reply = prefix + guard.check_reply(reply, t.action_succeeded, session_id,
-                                       tools.session_booked_days(db, session_id, now))
+                                       tools.session_booked_days(db, session_id, now), registered=t.registered,
+                                       action_failed=t.action_failed)
 
     if history[-1]["role"] == "assistant" and not history[-1]["tool_calls"]:
         history[-1] = {**history[-1], "text": reply}  # keep what the patient actually saw

@@ -81,12 +81,12 @@ def _parse_dob(raw: str) -> date:
     return dob
 
 
-def session_booked_days(db: Session, session_id: str, now: datetime) -> set[tuple[int, int]]:
-    """(month, day) of every upcoming booked appointment this session may talk about."""
+def session_booked_days(db: Session, session_id: str, now: datetime) -> set[date]:
+    """Dates of every upcoming booked appointment this session may talk about."""
     ids = _authorized_ids(db, get_conversation(db, session_id))
     starts = db.scalars(select(Slot.start).join(Appointment, Appointment.slot_id == Slot.id).where(
         Appointment.patient_id.in_(ids), Appointment.status == "booked", Slot.start >= now)) if ids else []
-    return {(s.month, s.day) for s in starts}
+    return {s.date() for s in starts}
 
 
 def _upcoming(db: Session, patient_id: int, now: datetime) -> list[dict]:
@@ -117,10 +117,16 @@ def verify_patient(db: Session, session_id: str, full_name: str, dob: str, now: 
     _mark_verified(conv, patient.id)
     db.commit()
     dependents = db.scalars(select(Patient).where(Patient.guardian_id == patient.id).order_by(Patient.id))
-    return {"verified": True, "patient_id": patient.id, "full_name": patient.full_name,
-            "insurance": patient.insurance, "upcoming": _upcoming(db, patient.id, now),
-            "dependents": [{"patient_id": d.id, "full_name": d.full_name, "upcoming": _upcoming(db, d.id, now)}
-                           for d in dependents]}
+    result = {"verified": True, "patient_id": patient.id, "full_name": patient.full_name,
+              "insurance": patient.insurance, "upcoming": _upcoming(db, patient.id, now),
+              "dependents": [{"patient_id": d.id, "full_name": d.full_name, "upcoming": _upcoming(db, d.id, now)}
+                             for d in dependents]}
+    if result["upcoming"] or any(d["upcoming"] for d in result["dependents"]):
+        # Where the model is looking right now; a prompt rule alone didn't stop it asking "cancel it?" first.
+        result["next_step"] = ("If the patient already said they want to cancel one of these (and which one is "
+                               "clear), call modify without confirm now, before asking them anything; it returns "
+                               "the details to read back. Don't ask 'shall I cancel it?' first.")
+    return result
 
 
 def register_patient(db: Session, session_id: str, full_name: str, phone: str, dob: str, insurance: str,

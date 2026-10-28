@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 from app import guard
@@ -45,10 +47,37 @@ def test_redact_masks_phone_and_dob():
     assert "010-1002" not in out and "1986" not in out and "slot 42" in out
 
 
+THU_NOV_5, FRI_NOV_6 = date(2026, 11, 5), date(2026, 11, 6)
+
+
 def test_claim_backed_by_existing_appointment_dates():
     reply = "You're already all set! Your cleaning is confirmed for Thursday, November 5 at 8:00 AM."
-    assert guard.check_reply(reply, False, "s", booked_days={(11, 5)}) == reply
-    assert guard.check_reply(reply, False, "s", booked_days={(11, 6)}) == guard.UNBACKED_REPLY
+    assert guard.check_reply(reply, False, "s", booked={THU_NOV_5}) == reply
+    assert guard.check_reply(reply, False, "s", booked={FRI_NOV_6}) == guard.UNBACKED_REPLY
     both = "You're all set for Nov 5 and Nov 9."  # one real date doesn't vouch for an invented one
-    assert guard.check_reply(both, False, "s", booked_days={(11, 5)}) == guard.UNBACKED_REPLY
-    assert guard.check_reply("You're all set!", False, "s", booked_days={(11, 5)}) == guard.UNBACKED_REPLY
+    assert guard.check_reply(both, False, "s", booked={THU_NOV_5}) == guard.UNBACKED_REPLY
+    # Gemini eval regression: "You're all set, Sam!" a turn after a real booking is a true restatement...
+    assert guard.check_reply("You're all set, Sam!", False, "s", booked={THU_NOV_5}) == "You're all set, Sam!"
+    # ...but not right after a booking failed (e.g. slot_taken), and not when nothing is booked.
+    assert guard.check_reply("You're all set!", False, "s", booked={THU_NOV_5}, action_failed=True) == guard.UNBACKED_REPLY
+    assert guard.check_reply("You're all set!", False, "s") == guard.UNBACKED_REPLY
+
+
+def test_state_claims_about_existing_appointments_without_dates():
+    """Eval regression: right after verifying, 'the kids are booked Thursday at 3 and 4' is true."""
+    kids = "You're verified, Priya. Arjun and Anika are booked for cleanings Thursday at 3:00 and 4:00 PM."
+    assert guard.check_reply(kids, False, "s", booked={THU_NOV_5}) == kids
+    assert guard.check_reply(kids, False, "s", booked={FRI_NOV_6}) == guard.UNBACKED_REPLY  # wrong weekday
+    assert guard.check_reply(kids, False, "s") == guard.UNBACKED_REPLY  # nothing booked at all
+    assert guard.check_reply("I've booked you in!", False, "s", booked={THU_NOV_5}) == guard.UNBACKED_REPLY
+
+
+def test_registration_turn_allows_all_set_but_not_booking_claims():
+    ok = "You're all set in our system, Sam. What day works best for you?"
+    assert guard.check_reply(ok, False, "s", registered=True) == ok
+    assert guard.check_reply(ok, False, "s") == guard.UNBACKED_REPLY
+    booked = "You're all set! Your cleaning is booked."
+    assert guard.check_reply(booked, False, "s", registered=True) == guard.UNBACKED_REPLY
+    # Gemini eval regression: registration + options in one reply. "All set up" is never a booking claim.
+    setup = "Thanks, Sam! You're all set up in our system. Here are cleanings next week: Monday, November 9 at 8:00 AM"
+    assert guard.check_reply(setup, False, "s", registered=True) == setup
