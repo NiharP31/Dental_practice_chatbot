@@ -81,6 +81,14 @@ def _parse_dob(raw: str) -> date:
     return dob
 
 
+def session_booked_days(db: Session, session_id: str, now: datetime) -> set[tuple[int, int]]:
+    """(month, day) of every upcoming booked appointment this session may talk about."""
+    ids = _authorized_ids(db, get_conversation(db, session_id))
+    starts = db.scalars(select(Slot.start).join(Appointment, Appointment.slot_id == Slot.id).where(
+        Appointment.patient_id.in_(ids), Appointment.status == "booked", Slot.start >= now)) if ids else []
+    return {(s.month, s.day) for s in starts}
+
+
 def _upcoming(db: Session, patient_id: int, now: datetime) -> list[dict]:
     rows = db.execute(
         select(Appointment, Slot).join(Slot, Slot.id == Appointment.slot_id)

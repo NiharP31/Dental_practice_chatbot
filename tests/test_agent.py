@@ -241,3 +241,29 @@ def test_throttle_spaces_calls(monkeypatch):
     llm.throttle()
     assert slept == [7.5]
 
+
+def test_restating_an_earlier_booking_is_not_replaced(db, script):
+    """Live smoke-test regression: patient says 'yes, book it' after the booking already went through."""
+    queue, _ = script
+    ids = add_day(db, THU)
+    add_patient(db)
+    queue += [call("verify_patient", full_name="Daniel Reyes", dob="1984-03-12"),
+              call("book", patient_ids=[1], slot_ids=[ids["08:00"]], appt_type="cleaning"),
+              say("Booked for Thursday, October 29 at 8:00 AM.")]
+    agent.run_turn(db, "sess-0012", "Daniel Reyes 3/12/1984, cleaning thursday 8am", now=NOW)
+    queue.append(say("You're already all set! Your cleaning is confirmed for Thursday, October 29 at 8:00 AM."))
+    r = agent.run_turn(db, "sess-0012", "Yes, please book it.", now=NOW)
+    assert r["reply"].startswith("You're already all set")
+    queue.append(say("You're all set for Friday, October 30 at 8:00 AM."))  # no such appointment
+    assert agent.run_turn(db, "sess-0012", "great", now=NOW)["reply"] == guard.UNBACKED_REPLY
+
+
+def test_other_sessions_appointments_do_not_back_claims(db, script):
+    queue, _ = script
+    ids = add_day(db, THU)
+    add_patient(db)
+    queue += [call("verify_patient", full_name="Daniel Reyes", dob="1984-03-12"),
+              call("book", patient_ids=[1], slot_ids=[ids["08:00"]], appt_type="cleaning"), say("Booked.")]
+    agent.run_turn(db, "sess-0013", "book", now=NOW)
+    queue.append(say("You're all set for Thursday, October 29 at 8:00 AM."))
+    assert agent.run_turn(db, "sess-0014", "am I booked?", now=NOW)["reply"] == guard.UNBACKED_REPLY

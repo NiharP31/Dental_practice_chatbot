@@ -178,7 +178,8 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
         reply = guard.canned_reply()
         if t.confirmations:  # a change went through before the LLM failed: say so from the tool result
             reply = "Done: " + "; ".join(t.confirmations) + f". If you need anything else, call us at {config.OFFICE_PHONE}."
-    reply = prefix + guard.check_reply(reply, t.action_succeeded, session_id)
+    reply = prefix + guard.check_reply(reply, t.action_succeeded, session_id,
+                                       tools.session_booked_days(db, session_id, now))
 
     if history[-1]["role"] == "assistant" and not history[-1]["tool_calls"]:
         history[-1] = {**history[-1], "text": reply}  # keep what the patient actually saw

@@ -43,3 +43,12 @@ def test_medical_advice_is_blocked():
 def test_redact_masks_phone_and_dob():
     out = guard.redact("Maria, (555) 010-1002, born 07/25/1986 or 1986-07-25 or July 25, 1986, slot 42")
     assert "010-1002" not in out and "1986" not in out and "slot 42" in out
+
+
+def test_claim_backed_by_existing_appointment_dates():
+    reply = "You're already all set! Your cleaning is confirmed for Thursday, November 5 at 8:00 AM."
+    assert guard.check_reply(reply, False, "s", booked_days={(11, 5)}) == reply
+    assert guard.check_reply(reply, False, "s", booked_days={(11, 6)}) == guard.UNBACKED_REPLY
+    both = "You're all set for Nov 5 and Nov 9."  # one real date doesn't vouch for an invented one
+    assert guard.check_reply(both, False, "s", booked_days={(11, 5)}) == guard.UNBACKED_REPLY
+    assert guard.check_reply("You're all set!", False, "s", booked_days={(11, 5)}) == guard.UNBACKED_REPLY
