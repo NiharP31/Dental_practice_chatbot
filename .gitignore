@@ -8,3 +8,5 @@ __pycache__/
 .pytest_cache/
 evals/results/
 assessment.pdf
+*.sqlite
+*.sqlite3
