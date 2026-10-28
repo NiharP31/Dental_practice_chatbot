@@ -1,10 +1,13 @@
 import hmac
 import logging
+import threading
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -25,7 +28,7 @@ STATIC = Path(__file__).resolve().parent.parent / "static"
 
 
 def visible(text: str) -> str:
-    """Message text as the patient wrote/saw it (drops the agent's internal red-flag note)."""
+    """Message text as the patient wrote/saw it (drops the agent's internal system notes)."""
     return text.split(RED_FLAG_NOTE_MARKER)[0]
 
 
@@ -39,6 +42,34 @@ async def lifespan(_app):
 
 app = FastAPI(title=config.OFFICE_NAME, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+# ponytail: per-process sliding window; with more than one instance, move it to Redis or the edge.
+_hits: dict[str, deque] = defaultdict(deque)
+_hits_lock = threading.Lock()
+
+
+def client_ip(request: Request) -> str:
+    # Render's proxy appends the address it saw, so the rightmost hop is the one a client can't forge.
+    fwd = request.headers.get("x-forwarded-for")
+    return fwd.split(",")[-1].strip() if fwd else (request.client.host if request.client else "unknown")
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    """Per-IP cap on POSTs: a public URL spends real LLM credits."""
+    if request.method == "POST":
+        ip, now = client_ip(request), time.monotonic()
+        with _hits_lock:
+            q = _hits[ip]
+            while q and now - q[0] > 60:
+                q.popleft()
+            if len(q) >= config.RATE_LIMIT_PER_MIN:
+                log.warning("rate_limited ip=%s", ip)
+                return JSONResponse({"reply": "You're sending messages a little fast. Please wait a moment and try "
+                                              f"again, or call us at {config.OFFICE_PHONE}.", "options": [], "error": True},
+                                    status_code=429)
+            q.append(now)
+    return await call_next(request)
 
 
 class ChatIn(BaseModel):

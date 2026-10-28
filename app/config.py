@@ -25,6 +25,7 @@ DAILY_LLM_BUDGET_USD = float(os.getenv("DAILY_LLM_BUDGET_USD") or 3)  # billed p
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 STAFF_TOKEN = os.getenv("STAFF_TOKEN", "")
 LLM_MAX_RPM = float(os.getenv("LLM_MAX_RPM") or 0)  # 0 = no client-side throttle
+RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN") or 20)  # POSTs per client IP per minute
 
 
 def office_now() -> datetime:

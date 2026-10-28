@@ -8,7 +8,20 @@ from app.db import Conversation, StaffAlert
 @pytest.fixture
 def client(session_factory, monkeypatch):
     monkeypatch.setattr(main, "SessionLocal", session_factory)
+    main._hits.clear()
     return TestClient(main.app)  # not used as a context manager: skips startup seeding
+
+
+def test_per_ip_rate_limit(client, monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "RATE_LIMIT_PER_MIN", 3)
+    body = {"session_id": "sess-rl01", "rating": "up"}
+    assert [client.post("/feedback", json=body).status_code for _ in range(3)] == [200, 200, 200]
+    r = client.post("/feedback", json=body)
+    assert r.status_code == 429 and "(555) 010-2200" in r.json()["reply"]
+    # A different client IP (as Render's proxy reports it) has its own budget.
+    assert client.post("/feedback", json=body, headers={"X-Forwarded-For": "1.2.3.4, 5.6.7.8"}).status_code == 200
+    assert client.get("/health").status_code == 200  # GETs aren't limited
 
 
 def test_feedback_thumbs_down_flags_conversation(client, session_factory):
