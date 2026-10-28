@@ -1,11 +1,13 @@
 from datetime import UTC, date, datetime
 
-from sqlalchemy import JSON, Boolean, ForeignKey, String, Text, create_engine, event
+from sqlalchemy import JSON, Boolean, ForeignKey, String, Text, create_engine, event, make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app import config
 
 SQLITE_BUSY_TIMEOUT_MS = 5000  # below pytest-timeout's 10s so a stuck lock fails loudly
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", None)
 
 
 def _utcnow() -> datetime:
@@ -111,9 +113,13 @@ def make_engine(url: str):
             conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
 
         return engine
-    # prepare_threshold=None: Supabase's transaction pooler (port 6543) can't hold prepared statements
-    return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5,
-                         connect_args={"prepare_threshold": None})
+    # Built for Supabase's transaction pooler (port 6543): it already pools server connections and
+    # hands each transaction to any of them, so no client-side pool (NullPool) and no prepared
+    # statements (prepare_threshold=None), which can't survive moving between server connections.
+    connect_args = {"prepare_threshold": None}
+    if make_url(url).host not in LOCAL_HOSTS and "sslmode" not in url:
+        connect_args["sslmode"] = "require"  # local docker Postgres (tests) has no TLS
+    return create_engine(url, poolclass=NullPool, connect_args=connect_args)
 
 
 engine = make_engine(config.DATABASE_URL)

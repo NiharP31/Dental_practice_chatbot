@@ -19,9 +19,27 @@ def test_per_ip_rate_limit(client, monkeypatch):
     assert [client.post("/feedback", json=body).status_code for _ in range(3)] == [200, 200, 200]
     r = client.post("/feedback", json=body)
     assert r.status_code == 429 and "(555) 010-2200" in r.json()["reply"]
-    # A different client IP (as Render's proxy reports it) has its own budget.
-    assert client.post("/feedback", json=body, headers={"X-Forwarded-For": "1.2.3.4, 5.6.7.8"}).status_code == 200
     assert client.get("/health").status_code == 200  # GETs aren't limited
+
+
+def test_rate_limit_keys_on_x_forwarded_for_behind_render(session_factory, monkeypatch):
+    """Production runs `uvicorn --proxy-headers --forwarded-allow-ips="*"`; this wraps the app in the
+    same uvicorn middleware those flags install, so the limiter sees what it sees on Render."""
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    from app import config
+    monkeypatch.setattr(main, "SessionLocal", session_factory)
+    monkeypatch.setattr(config, "RATE_LIMIT_PER_MIN", 2)
+    main._hits.clear()
+    behind_render = TestClient(ProxyHeadersMiddleware(main.app, trusted_hosts="*"))
+    body = {"session_id": "sess-xff1", "rating": "up"}
+
+    def post(xff):
+        return behind_render.post("/feedback", json=body, headers={"X-Forwarded-For": xff}).status_code
+
+    assert [post("203.0.113.7"), post("203.0.113.7"), post("203.0.113.7")] == [200, 200, 429]
+    assert post("198.51.100.9") == 200  # a different patient behind the same Render proxy isn't blocked
+    assert set(main._hits) == {"203.0.113.7", "198.51.100.9"}  # keyed by client IP, not the proxy's
 
 
 def test_feedback_thumbs_down_flags_conversation(client, session_factory):
@@ -105,3 +123,16 @@ def test_slack_message_masks_phone_and_dob(monkeypatch):
     monkeypatch.setattr(tools.httpx, "post", lambda url, json, timeout: sent.update(json) or Ok())
     assert tools.post_slack("urgent", "Call 555-010-1002, DOB 03/12/1984")
     assert "1002" not in sent["text"] and "1984" not in sent["text"] and "URGENT" in sent["text"]
+
+
+def test_postgres_engine_is_set_up_for_supabase_transaction_pooler(monkeypatch):
+    from sqlalchemy.pool import NullPool
+
+    from app import db as dbmod
+    seen = {}
+    monkeypatch.setattr(dbmod, "create_engine", lambda url, **kw: seen.update(url=url, **kw))
+    dbmod.make_engine("postgresql://postgres.ref:pw@aws-0-us-west-1.pooler.supabase.com:6543/postgres")
+    assert seen["url"].startswith("postgresql+psycopg://") and seen["poolclass"] is NullPool
+    assert seen["connect_args"] == {"prepare_threshold": None, "sslmode": "require"}
+    dbmod.make_engine("postgresql://postgres:postgres@localhost:55432/test")  # local docker: no TLS
+    assert seen["connect_args"] == {"prepare_threshold": None}

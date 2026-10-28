@@ -1,5 +1,6 @@
 import hmac
 import logging
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -34,6 +35,10 @@ def visible(text: str) -> str:
 
 @asynccontextmanager
 async def lifespan(_app):
+    if os.getenv("RENDER") and config.DATABASE_URL.startswith("sqlite"):
+        # Render's disk is wiped on every restart/spin-down: patients and bookings would vanish.
+        raise RuntimeError("DATABASE_URL must point at Postgres (Supabase) on Render, not SQLite")
+    # Creates missing tables and seeds empty ones; never drops or overwrites anything.
     log.info("startup seed=%s", init_db())
     if not config.STAFF_TOKEN:
         log.warning("STAFF_TOKEN is not set: the staff API is open. Set it in any shared deployment.")
@@ -49,9 +54,9 @@ _hits_lock = threading.Lock()
 
 
 def client_ip(request: Request) -> str:
-    # Render's proxy appends the address it saw, so the rightmost hop is the one a client can't forge.
-    fwd = request.headers.get("x-forwarded-for")
-    return fwd.split(",")[-1].strip() if fwd else (request.client.host if request.client else "unknown")
+    # On Render, uvicorn runs with --proxy-headers --forwarded-allow-ips="*", so request.client is
+    # already the address from X-Forwarded-For (its leftmost entry), not Render's proxy.
+    return request.client.host if request.client else "unknown"
 
 
 @app.middleware("http")

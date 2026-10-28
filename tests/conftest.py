@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 from app import config
-from app.db import Base, Patient, Slot, make_engine
+from app.db import LOCAL_HOSTS, Base, Patient, Slot, make_engine
 
 NOW = datetime(2026, 10, 28, 9, 0)  # Wednesday
 
@@ -15,6 +15,9 @@ def session_factory(tmp_path):
     # TEST_DATABASE_URL runs the suite against Postgres (see docker-compose.yml); default is a
     # file-backed SQLite so separate connections really contend (in-memory DBs aren't shared).
     engine = make_engine(os.getenv("TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'test.db'}")
+    if engine.url.host not in LOCAL_HOSTS:
+        # This fixture drops every table. Use scripts/contention_check.py for a remote DB (e.g. Supabase).
+        pytest.exit(f"refusing to drop tables on non-local TEST_DATABASE_URL host {engine.url.host!r}")
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     yield sessionmaker(engine, expire_on_commit=False)

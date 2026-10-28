@@ -1,0 +1,30 @@
+# Render Blueprint: New > Blueprint, pick this repo. Secrets marked `sync: false` are prompted for once.
+services:
+  - type: web
+    name: bright-smile-chatbot
+    runtime: python
+    plan: free
+    # uv reads .python-version (3.12) and uv.lock; the app runs from the venv it creates.
+    buildCommand: pip install uv && uv sync --locked --no-dev
+    # --proxy-headers + trusting Render's proxy makes request.client the patient's IP (per-IP rate limit).
+    startCommand: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
+    healthCheckPath: /health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-haiku-5-5
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: LLM_CHAIN
+        value: claude,gemini
+      - key: DATABASE_URL  # Supabase transaction pooler URI (port 6543), see README
+        sync: false
+      - key: STAFF_TOKEN  # Render generates it; copy it from the Environment tab to log in to /staff
+        generateValue: true
+      - key: DAILY_LLM_BUDGET_USD
+        value: "3"
+      - key: OFFICE_TZ
+        value: America/Los_Angeles
