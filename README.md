@@ -9,9 +9,18 @@ anything happened that didn't.
 - **Staff:** https://bright-smile-chatbot.onrender.com/staff requires a token, provided with the
   submission email. Locally, set `STAFF_TOKEN` in `.env`.
 - **Free tier:** the first request after the service has been idle can take about a minute.
-- **Video:** [link]. 0:00 approach · 0:30 how I built it · 1:00 new patient · 1:40 emergency + staff
-  alert · 2:20 red flag · 2:40 family · 3:10 unverified cancel · 3:30 staff page, evals, CI ·
-  4:15 tradeoffs
+- **Video:** [link]
+
+## Architecture
+
+![Architecture: chat UI to FastAPI to the agent loop, which asks Claude Haiku (falling back to Gemini Flash-Lite, then a canned reply) which tool to call; tools read and write Postgres; replies pass through guardrails; emergencies write staff_alerts shown on /staff. An offline lane shows thumbs-down feedback becoming new eval scenarios that gate CI before deploy.](docs/architecture.svg)
+
+Conversation state lives in Postgres, not memory. **The LLM picks tools; code owns correctness:**
+- **Dates:** the model passes the patient's words ("later next week"); `app/dates.py` resolves them
+  against the office clock, and asks when unclear.
+- **Booking:** `UPDATE … WHERE status='open'`; no row changed means the slot was taken. Family
+  bookings are all-or-nothing; retries are idempotent.
+- **Identity:** `verify_patient` accepts only a DOB the patient actually typed.
 
 ## Try it
 
@@ -66,17 +75,6 @@ make eval                # scenario evals against the real LLM
 - **Supabase Postgres:** free managed Postgres that outlives Render restarts.
 - **SQLite:** zero-setup local runs and an isolated database per eval.
 - **Render, GitHub Actions, uv, pytest:** hosting from a Blueprint, CI, locked dependencies, tests.
-
-## Architecture
-
-![Architecture: chat UI to FastAPI to the agent loop, which asks Claude Haiku (falling back to Gemini Flash-Lite, then a canned reply) which tool to call; tools read and write Postgres; replies pass through guardrails; emergencies write staff_alerts shown on /staff. An offline lane shows thumbs-down feedback becoming new eval scenarios that gate CI before deploy.](docs/architecture.svg)
-
-Conversation state lives in Postgres, not memory. **The LLM picks tools; code owns correctness:**
-- **Dates:** the model passes the patient's words ("later next week"); `app/dates.py` resolves them
-  against the office clock, and asks when unclear.
-- **Booking:** `UPDATE … WHERE status='open'`; no row changed means the slot was taken. Family
-  bookings are all-or-nothing; retries are idempotent.
-- **Identity:** `verify_patient` accepts only a DOB the patient actually typed.
 
 ## How each scenario in the brief is handled
 
