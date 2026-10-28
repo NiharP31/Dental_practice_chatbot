@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run pytest -q
+
+  evals:
+    # Real LLM calls cost money and need keys: only on pushes to main, only when secrets are configured.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      ANTHROPIC_MODEL: claude-haiku-5-5
+      GEMINI_MODEL: gemini-3.5-flash-lite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Evals on Claude (full suite)
+        if: env.ANTHROPIC_API_KEY != ''
+        run: uv run python -m evals.run -v
+      - name: Fallback smoke on Gemini (4 scenarios, throttled)
+        if: env.GEMINI_API_KEY != ''
+        run: uv run python -m evals.run --smoke-fallback -v
+      - name: No keys configured
+        if: env.ANTHROPIC_API_KEY == '' && env.GEMINI_API_KEY == ''
+        run: echo "::notice::Evals skipped - add ANTHROPIC_API_KEY and/or GEMINI_API_KEY repository secrets to run them."
