@@ -11,6 +11,9 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "python-dotenv>=1.0",
     "tzdata>=2024.1",
+    "google-genai>=2.33.0",
+    "openai>=3.40.0",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]
