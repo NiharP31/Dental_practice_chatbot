@@ -59,6 +59,16 @@ class ModifyArgs(BaseModel):
     confirm: bool = Field(False, description="true only after the patient said yes to the read-back details")
 
 
+class TriageArgs(BaseModel):
+    what_happened: str = Field(description="What happened, in the patient's words")
+    when: str = Field(description="When it happened, as the patient said it")
+    area: str = Field(description="Which tooth or area of the mouth")
+    pain: int | None = Field(None, ge=0, le=10, description="Pain 0-10, if the patient gave one")
+    facial_swelling: bool
+    uncontrolled_bleeding: bool = Field(description="Bleeding that won't stop")
+    trouble_breathing_or_swallowing: bool
+
+
 class NotifyArgs(BaseModel):
     priority: Literal["urgent", "normal"]
     summary: str = Field(description="What the staff need to know: who, what happened, what they want")
@@ -74,6 +84,7 @@ class Turn:
     action_succeeded: bool = False  # a book/modify actually changed (or replayed) something this turn
     registered: bool = False  # register_patient succeeded this turn
     action_failed: bool = False  # a book/modify returned an error this turn
+    triage_red: bool = False  # the emergency screening found a red flag this turn
     confirmations: list[str] = field(default_factory=list)
 
 
@@ -90,8 +101,12 @@ TOOLS: dict[str, ToolSpec] = {
                                "appointments and any dependents they can manage."),
     "register_patient": ToolSpec(RegisterArgs, lambda t, a: tools.register_patient(t.db, t.session_id, **a),
                                  "Register a new patient once you have name, phone, DOB and insurance."),
-    "find_slots": ToolSpec(FindSlotsArgs, lambda t, a: tools.find_slots(t.db, now=t.now, **a),
-                           "Find up to 3 open appointment options in the window the patient described."),
+    "find_slots": ToolSpec(FindSlotsArgs, lambda t, a: tools.find_slots(t.db, now=t.now, session_id=t.session_id, **a),
+                           "Find up to 3 open appointment options in the window the patient described. "
+                           "Emergency times need triage_emergency first."),
+    "triage_emergency": ToolSpec(TriageArgs, lambda t, a: tools.triage_emergency(t.db, t.session_id, **a),
+                                 "Record the emergency screening answers (area, pain, red flags). Creates or "
+                                 "updates the urgent staff alert; any red flag routes to the 911 path."),
     "book": ToolSpec(BookArgs, lambda t, a: tools.book(t.db, t.session_id, t.turn, now=t.now, **a),
                      "Book appointments for verified/registered patients. Book a whole family in one call."),
     "modify": ToolSpec(ModifyArgs, lambda t, a: tools.modify(t.db, t.session_id, t.turn, now=t.now, **a),
@@ -129,6 +144,8 @@ def dispatch(t: Turn, name: str, raw_args: dict) -> dict:
         t.registered = True
     if name in ("book", "modify") and "error" in result:
         t.action_failed = True
+    if name == "triage_emergency" and result.get("red_flag"):
+        t.triage_red = True
     if name == "find_slots" and "options" in result:
         t.options = result["options"]
     if name == "book" and result.get("booked"):
@@ -199,6 +216,14 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
         reply = guard.canned_reply()
         if t.confirmations:  # a change went through before the LLM failed: say so from the tool result
             reply = "Done: " + "; ".join(t.confirmations) + f". If you need anything else, call us at {config.OFFICE_PHONE}."
+        elif tools.session_has_alert(db, session_id, "urgent"):  # true by DB, so it's safe to say
+            reply = ("I'm sorry, I'm having trouble on my end, but our dental team has been alerted that this is "
+                     f"urgent. Please call us right away at {config.OFFICE_PHONE}, and if you have trouble "
+                     "breathing or swallowing, or swelling that's spreading, call 911.")
+    if t.triage_red:
+        # A red flag that only came out in screening ("yes, my cheek is swelling") gets the same
+        # code-written 911 message as one typed up front; triage_emergency already alerted staff.
+        prefix = guard.EMERGENCY_911
     reply = prefix + guard.check_reply(reply, t.action_succeeded, session_id,
                                        tools.session_booked_days(db, session_id, now), registered=t.registered,
                                        action_failed=t.action_failed,
@@ -208,8 +233,8 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
         history[-1] = {**history[-1], "text": reply}  # keep what the patient actually saw
     else:
         history.append({"role": "assistant", "text": reply, "tool_calls": []})
-    # Quick-reply buttons only while the patient is still choosing.
-    options = [] if t.action_succeeded else [o["when"] for o in t.options]
+    # Quick-reply buttons only while the patient is still choosing, and never alongside 911 advice.
+    options = [] if t.action_succeeded or t.triage_red else [o["when"] for o in t.options]
     payload = {"reply": reply, "options": options, "turn": turn}
     conv.messages = history
     tools.set_state(conv, turn=turn, last_reply=payload)

@@ -369,3 +369,48 @@ def test_non_emergency_booking_creates_no_alert(db):
     ids = add_day(db, THU)
     book(db, "s1", 1, [verified(db)], [ids["09:00"]], "cleaning", now=NOW)
     assert db.query(StaffAlert).count() == 0
+
+
+# --- emergency screening ---------------------------------------------------------------------
+
+def _triage(db, sid="s1", **flags):
+    from app.tools import triage_emergency
+    args = dict(what_happened="tooth broke on a fork", when="lunch today", area="lower right molar", pain=5,
+                facial_swelling=False, uncontrolled_bleeding=False, trouble_breathing_or_swallowing=False)
+    return triage_emergency(db, sid, **{**args, **flags})
+
+
+def test_emergency_slots_require_screening_first(db):
+    add_day(db, THU)
+    with pytest.raises(ToolError) as e:
+        find_slots(db, "emergency", "as soon as possible", now=NOW, session_id="s1")
+    assert e.value.code == "screening_required" and "swelling" in e.value.message
+    _triage(db)
+    assert find_slots(db, "emergency", "as soon as possible", now=NOW, session_id="s1")["options"]
+    assert find_slots(db, "cleaning", "thursday", now=NOW, session_id="s2")["options"]  # only emergencies are gated
+
+
+def test_red_flag_on_screening_blocks_emergency_slots(db):
+    add_day(db, THU)
+    r = _triage(db, facial_swelling=True)
+    assert r["red_flag"]
+    with pytest.raises(ToolError) as e:
+        find_slots(db, "emergency", "as soon as possible", now=NOW, session_id="s1")
+    assert e.value.code == "red_flag"
+
+
+def test_triage_updates_the_early_alert_instead_of_adding_one(db):
+    first = notify_staff(db, "s1", "urgent", "broken tooth")  # what the live Render test produced
+    r = _triage(db)
+    [alert] = db.query(StaffAlert).all()
+    assert alert.id == first["alert_id"] == r["alert_id"]
+    for part in ["tooth broke on a fork", "When: lunch today", "Area: lower right molar", "Pain: 5/10",
+                 "facial swelling no", "bleeding that won't stop no", "trouble breathing/swallowing no"]:
+        assert part in alert.summary
+
+
+def test_triage_without_an_early_alert_creates_one_and_flags_red(db):
+    r = _triage(db, uncontrolled_bleeding=True, pain=None)
+    [alert] = db.query(StaffAlert).all()
+    assert alert.priority == "urgent" and alert.summary.startswith("RED FLAG")
+    assert "bleeding that won't stop YES" in alert.summary and "Pain: not given" in alert.summary

@@ -423,3 +423,30 @@ def test_alert_claim_after_notify_staff_is_kept(db, script):
     assert r["reply"] == "I've let our dental team know it's urgent. What's your full name?"
     [alert] = db.query(StaffAlert).all()
     assert alert.priority == "urgent" and alert.patient_id is None  # nobody identified yet
+
+
+def test_red_flag_revealed_only_in_screening_gets_the_911_path(db, script):
+    """'Yes, my cheek's been swelling' doesn't match the red-flag regex; triage_emergency still routes it."""
+    queue, _ = script
+    add_day(db, THU)
+    queue += [call("notify_staff", priority="urgent", summary="Broken tooth"),
+              say("I'm sorry! Which tooth, pain 0-10, and any facial swelling, bleeding that won't stop, or trouble "
+                  "breathing or swallowing?")]
+    r1 = agent.run_turn(db, "sess-tri", "my tooth broke", now=NOW)
+    assert not r1["reply"].startswith(guard.EMERGENCY_911)
+    queue += [call("triage_emergency", what_happened="tooth broke", when="this morning", area="lower left",
+                   pain=8, facial_swelling=True, uncontrolled_bleeding=False, trouble_breathing_or_swallowing=False),
+              call("find_slots", appt_type="emergency", when="as soon as possible"),
+              say("Is someone with you right now?")]
+    r2 = agent.run_turn(db, "sess-tri", "Actually yes, my cheek has been swelling up since this morning. Lower left, about an 8.", now=NOW)
+    assert r2["reply"].startswith(guard.EMERGENCY_911) and r2["options"] == []
+    [alert] = db.query(StaffAlert).all()  # one urgent alert, updated with the screening
+    assert alert.summary.startswith("RED FLAG") and "facial swelling YES" in alert.summary
+
+
+def test_llm_dies_after_an_urgent_alert_says_staff_know_and_gives_phone(db, script):
+    """Eval run: Claude failed right after notify_staff in an emergency; the generic canned reply wasted that."""
+    queue, _ = script
+    queue += [call("notify_staff", priority="urgent", summary="Broken tooth"), llm.LLMUnavailable()]
+    r = agent.run_turn(db, "sess-dead", "my tooth broke", now=NOW)
+    assert "dental team has been alerted" in r["reply"] and "(555) 010-2200" in r["reply"] and "911" in r["reply"]

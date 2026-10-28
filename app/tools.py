@@ -185,12 +185,26 @@ def register_patient(db: Session, session_id: str, full_name: str, phone: str, d
     return {"patient_id": patient.id, "full_name": name, "insurance": ins, "registered": True}
 
 
+SCREENING_ASK = ("In ONE short message ask: which tooth or area, pain from 0 to 10, when it happened (if not "
+                 "said), and whether they have any facial swelling, bleeding that won't stop, or trouble "
+                 "breathing or swallowing. Then call triage_emergency with the answers.")
+
+
 def find_slots(db: Session, appt_type: str, when: str, count: int = 1,
-               exclude_slot_ids: list[int] | None = None, now: datetime | None = None) -> dict:
+               exclude_slot_ids: list[int] | None = None, now: datetime | None = None,
+               session_id: str | None = None) -> dict:
     """Up to 3 open options in the window the patient described. count>1 = back-to-back run
-    (family). Options are spread across different days/times rather than 3 adjacent slots."""
+    (family). Options are spread across different days/times rather than 3 adjacent slots.
+    Emergency slots are only offered after the red-flag screening (triage_emergency) came back clear."""
     if appt_type not in config.APPT_TYPES:
         raise ToolError("bad_type", f"appt_type must be one of {', '.join(config.APPT_TYPES)}.")
+    if appt_type == "emergency" and session_id is not None:
+        triage = (get_conversation(db, session_id).state or {}).get("triage")
+        if triage is None:
+            raise ToolError("screening_required", "Screen before offering emergency times. " + SCREENING_ASK)
+        if triage["red_flag"]:
+            raise ToolError("red_flag", "The patient has been told to call 911 or go to the ER. Don't offer "
+                                        "appointments; stay with their safety.")
     if not 1 <= count <= 6:
         raise ToolError("bad_count", "count must be between 1 and 6.")
     now = now or config.office_now()
@@ -338,6 +352,37 @@ def modify(db: Session, session_id: str, turn: int, appointment_id: int, action:
         db.rollback()
         raise
     return {"done": True, "action": action, "details": details}
+
+
+def triage_emergency(db: Session, session_id: str, what_happened: str, when: str, area: str,
+                     pain: int | None, facial_swelling: bool, uncontrolled_bleeding: bool,
+                     trouble_breathing_or_swallowing: bool) -> dict:
+    """Record the emergency screening. Code, not the model, decides what a yes means: any red flag
+    routes to the 911 path. The summary (written by code, always complete) goes on the session's
+    urgent alert: the existing one is updated rather than a second alert created."""
+    red = facial_swelling or uncontrolled_bleeding or trouble_breathing_or_swallowing
+    yn = lambda b: "YES" if b else "no"  # noqa: E731
+    summary = (("RED FLAG, told to call 911 / go to the ER. " if red else "")
+               + f"Dental emergency: {what_happened.strip() or 'not described'}. When: {when.strip() or 'not given'}. "
+               f"Area: {area.strip() or 'not given'}. Pain: {'not given' if pain is None else f'{pain}/10'}. "
+               f"Screening: facial swelling {yn(facial_swelling)}; bleeding that won't stop {yn(uncontrolled_bleeding)}; "
+               f"trouble breathing/swallowing {yn(trouble_breathing_or_swallowing)}.")
+    conv = get_conversation(db, session_id)
+    alert = db.scalar(select(StaffAlert).where(StaffAlert.session_id == session_id, StaffAlert.priority == "urgent",
+                                               StaffAlert.status == "open").order_by(StaffAlert.id.desc()).limit(1))
+    if alert:
+        alert.summary = summary[:2000]
+        set_state(conv, triage={"red_flag": red}, **({"red_flag_alerted": True} if red else {}))
+        db.commit()
+        alert_id = alert.id
+    else:
+        set_state(conv, triage={"red_flag": red}, **({"red_flag_alerted": True} if red else {}))
+        alert_id = notify_staff(db, session_id, "urgent", summary)["alert_id"]
+    return {"triaged": True, "red_flag": red, "alert_id": alert_id, "summary": summary,
+            "next": ("RED FLAG: the patient is shown 911/ER advice by our system. Don't repeat it, don't offer or "
+                     "book appointments; be calm and ask if someone is with them.") if red else
+                    ("Screening clear. Get their details (verify or register) and offer the soonest emergency "
+                     "slot; put the summary in the booking notes.")}
 
 
 def notify_staff(db: Session, session_id: str, priority: str, summary: str) -> dict:
