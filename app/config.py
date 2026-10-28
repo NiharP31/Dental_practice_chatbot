@@ -8,6 +8,7 @@ load_dotenv()
 
 OFFICE_NAME = "Bright Smile Dental"
 OFFICE_PHONE = "(555) 010-2200"
+OFFICE_ADDRESS = "1450 Ocean Park Blvd, Suite 200, Santa Monica, CA"  # placeholder address
 OFFICE_TZ = ZoneInfo(os.getenv("OFFICE_TZ") or "America/Los_Angeles")
 OPEN_HOUR, CLOSE_HOUR = 8, 18
 OPEN_WEEKDAYS = range(6)  # Mon-Sat

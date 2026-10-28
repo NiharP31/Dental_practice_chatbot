@@ -34,7 +34,7 @@ def get_conversation(db: Session, session_id: str) -> Conversation:
     return conv
 
 
-def _set_state(conv: Conversation, **changes) -> None:
+def set_state(conv: Conversation, **changes) -> None:
     conv.state = {**(conv.state or {}), **changes}  # reassign so SQLAlchemy sees the JSON change
 
 
@@ -43,7 +43,7 @@ def _verified_ids(conv: Conversation) -> set[int]:
 
 
 def _mark_verified(conv: Conversation, patient_id: int) -> None:
-    _set_state(conv, verified=sorted(_verified_ids(conv) | {patient_id}))
+    set_state(conv, verified=sorted(_verified_ids(conv) | {patient_id}))
 
 
 def _authorized_ids(db: Session, conv: Conversation) -> set[int]:
@@ -97,7 +97,7 @@ def verify_patient(db: Session, session_id: str, full_name: str, dob: str, now: 
     patient = db.scalar(select(Patient).where(
         func.lower(Patient.full_name) == _clean_name(full_name).lower(), Patient.dob == d))
     if patient is None:
-        _set_state(conv, verify_failures=failures + 1)
+        set_state(conv, verify_failures=failures + 1)
         db.commit()
         # Same answer whether the name exists or not: don't leak who is a patient.
         return {"verified": False, "message": "No patient matches that name and date of birth."}
@@ -272,7 +272,7 @@ def modify(db: Session, session_id: str, turn: int, appointment_id: int, action:
     same = {k: stored.get(k) for k in pending} == pending
     asked_turn = stored["turn"] if same else turn  # re-asking the same change keeps the original turn
     if not (confirm and same and asked_turn < turn):
-        _set_state(conv, pending={**pending, "turn": asked_turn})
+        set_state(conv, pending={**pending, "turn": asked_turn})
         db.commit()
         return {"needs_confirmation": True, "details": details,
                 "instruction": "Read these details to the patient and ask for a clear yes. "
@@ -288,7 +288,7 @@ def modify(db: Session, session_id: str, turn: int, appointment_id: int, action:
         else:
             appt.status = "cancelled"
         old.status = "open"
-        _set_state(conv, pending=None)
+        set_state(conv, pending=None)
         db.commit()
     except Exception:
         db.rollback()
