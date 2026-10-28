@@ -115,20 +115,31 @@ def claim_backed(reply: str, booked: set[date]) -> bool:
     return bool(named) or not ACTION_CLAIM.search(reply)
 
 
+def unbacked_claim(reply: str, action_succeeded: bool, booked: set[date] = frozenset(),
+                   registered: bool = False, action_failed: bool = False) -> bool:
+    """Does the reply claim a booking/change that nothing backs? Backed by: a successful book/modify
+    this turn; restating appointments that exist (claim_backed); or, after a registration, "you're
+    all set in our system" in a sentence that doesn't talk about an appointment. If a book/modify
+    failed this turn, only a success counts: "all set!" right after slot_taken is the lie this exists for.
+    (The eval runner calls this too, so the guard and its check can't drift apart.)"""
+    if not CLAIM.search(reply) or action_succeeded:
+        return False
+    # Only the claiming sentences matter: "You're all set in our system. Here are times: Wed at
+    # 10:30" is a true registration claim followed by options, not a booking claim.
+    claims = [s for s in re.split(r"(?<=[.!?])\s+|\n+", reply) if CLAIM.search(s)]
+    registration_only = registered and not any(APPOINTMENT_WORDS.search(s) for s in claims)
+    restates = not action_failed and claim_backed(reply, booked)
+    return not restates and not registration_only
+
+
 def check_reply(reply: str, action_succeeded: bool, session_id: str,
                 booked: set[date] = frozenset(), registered: bool = False, action_failed: bool = False,
                 alerted: bool = True) -> str:
-    """Last line of defence on the model's final reply. A claim is backed by a successful book/modify
-    this turn, or by restating appointments that exist (claim_backed). After a successful
-    registration, "you're all set in our system" is true, as long as it doesn't also talk about an
-    appointment. If a book/modify failed this turn, only a success counts: "all set!" right after a
-    slot_taken error is exactly the lie this guard exists for."""
-    if CLAIM.search(reply) and not action_succeeded:
-        registration_only = registered and not APPOINTMENT_WORDS.search(reply)
-        restates = not action_failed and claim_backed(reply, booked)
-        if not restates and not registration_only:
-            log.warning("unbacked_claim session=%s reply=%r", session_id, redact(reply[:300]))
-            return UNBACKED_REPLY
+    """Last line of defence on the model's final reply: unbacked booking/change claims, unbacked
+    "staff were told" claims, and medical advice."""
+    if unbacked_claim(reply, action_succeeded, booked, registered, action_failed):
+        log.warning("unbacked_claim session=%s reply=%r", session_id, redact(reply[:300]))
+        return UNBACKED_REPLY
     if not alerted and (claims := alert_claims(reply)):
         # "I've let our team know" with no staff_alerts row this session: drop those sentences and
         # offer the callback instead, so the patient never waits on a call nobody was asked to make.

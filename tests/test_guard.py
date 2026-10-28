@@ -129,3 +129,10 @@ def test_unbacked_alert_claim_is_removed_and_callback_offered(caplog):
     assert out.endswith(guard.ALERT_OFFER)
     assert any("unbacked_alert_claim" in m for m in caplog.messages)
     assert guard.check_reply(reply, False, "s", alerted=True) == reply  # backed by a staff_alerts row
+
+
+def test_registration_claim_followed_by_slot_options_passes():
+    """Eval regression (emergency_minimal_details): the times in the options list aren't part of the claim."""
+    reply = ("Thanks, Jordan, you're all set in our system. I searched from today and found these emergency "
+             "openings:\n\nWednesday, November 4 at 10:30 AM\nThursday, November 5 at 8:00 AM\n\nWhich works?")
+    assert guard.check_reply(reply, False, "s", registered=True) == reply

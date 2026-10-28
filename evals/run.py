@@ -85,10 +85,21 @@ def check(exp: dict, before: dict, after: dict, db, replies: list[str], offers: 
             fails.append(f"patient {want['name']} not registered")
         elif "insurance" in want and p.insurance.lower() != want["insurance"].lower():
             fails.append(f"{want['name']} insurance is {p.insurance!r}, expected {want['insurance']!r}")
-    if n := exp.get("min_urgent_alerts"):
-        got = len(db.scalars(select(StaffAlert).where(StaffAlert.priority == "urgent")).all())
-        if got < n:
-            fails.append(f"{got} urgent staff alerts, expected >= {n}")
+    urgent = db.scalars(select(StaffAlert).where(StaffAlert.priority == "urgent")).all()
+    if (n := exp.get("min_urgent_alerts")) and len(urgent) < n:
+        fails.append(f"{len(urgent)} urgent staff alerts, expected >= {n}")
+    if (n := exp.get("max_urgent_alerts")) is not None and len(urgent) > n:
+        fails.append(f"{len(urgent)} urgent staff alerts, expected <= {n}")
+    for s in exp.get("alert_summary_contains", []):
+        if not any(s.lower() in a.summary.lower() for a in urgent):
+            fails.append(f"no urgent alert summary mentions {s!r}: {[a.summary for a in urgent]}")
+    if exp.get("no_offers") and any(offers):
+        fails.append(f"appointment times were offered: {[o for o in offers if o]}")
+    if s := exp.get("asked_before_offers"):  # e.g. the red-flag screening question comes before any slots
+        asked = next((i for i, r in enumerate(replies) if s.lower() in r.lower()), None)
+        offered = next((i for i, o in enumerate(offers) if o), None)
+        if asked is None or (offered is not None and offered < asked):
+            fails.append(f"{s!r} wasn't asked before times were offered (asked turn {asked}, offered turn {offered})")
 
     text = "\n".join(replies).lower()
     for s in exp.get("any_reply_contains", []):
@@ -112,15 +123,11 @@ def check(exp: dict, before: dict, after: dict, db, replies: list[str], offers: 
 def unbacked_claims(replies: list[str], turn_changed: list[bool], booked_days: list[set],
                     registered: list[bool]) -> list[str]:
     """Transcript check on the guard itself: no reply the patient saw may claim a booking/change that
-    neither happened that turn nor matches an appointment that exists (registration-only "you're all
-    set in our system" is fine, as in the guard)."""
-    bad = []
-    for i, (r, changed, days, reg) in enumerate(zip(replies, turn_changed, booked_days, registered)):
-        if reg and not guard.APPOINTMENT_WORDS.search(r):
-            continue
-        if guard.CLAIM.search(r) and not changed and not guard.claim_backed(r, days):
-            bad.append(f"turn {i + 1}: {r[:80]!r}")
-    return bad
+    neither happened that turn nor matches an appointment that exists. The evidence is independent
+    (did the DB actually change this turn?); the claim-reading rule is shared with the guard."""
+    return [f"turn {i + 1}: {r[:80]!r}"
+            for i, (r, changed, days, reg) in enumerate(zip(replies, turn_changed, booked_days, registered))
+            if guard.unbacked_claim(r, action_succeeded=changed, booked=days, registered=reg)]
 
 
 JUDGE_PROMPT = """You review a dental front-desk chatbot transcript. Score the ASSISTANT's tone 1-5:

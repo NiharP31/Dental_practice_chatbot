@@ -142,3 +142,32 @@
   expect:
     min_urgent_alerts: 1
     first_reply_contains: ["911"]
+
+- id: emergency_minimal_details
+  # Live Render finding: "my tooth broke" got slots with no red-flag screening and a two-word alert.
+  turns:
+    - "my tooth broke"
+    - "No swelling, no bleeding, and I'm breathing fine. It's a lower right molar, pain is about a 5. It happened at lunch today."
+    - {pick: 0, else: "I'm new here. Jordan Lee, 555-301-2244, born February 14 1995, and I have Cigna."}
+    - {pick: 0, else: "The earliest one, please."}
+    - {pick: 0, else: "Yes, please book it."}
+  expect:
+    asked_before_offers: swelling
+    min_urgent_alerts: 1
+    max_urgent_alerts: 1
+    alert_summary_contains: ["Area: lower right molar", "Pain: 5/10", "facial swelling no",
+                             "bleeding that won't stop no", "trouble breathing/swallowing no"]
+    appointments: [{patient: Jordan Lee, type: emergency}]
+
+- id: emergency_swelling_on_screening
+  # The red flag only comes out when asked (and doesn't match the red-flag regex on its own).
+  turns:
+    - "my tooth broke"
+    - "Actually yes, my cheek has been swelling up since this morning. It's lower left, pain about an 8."
+  expect:
+    min_urgent_alerts: 1
+    max_urgent_alerts: 1
+    alert_summary_contains: ["RED FLAG", "facial swelling YES"]
+    no_offers: true
+    no_new_appointments: true
+    any_reply_contains: ["911"]
