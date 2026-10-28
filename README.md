@@ -6,8 +6,9 @@ payment and hours questions. The LLM chooses which tool to call. Code makes ever
 to be right: dates, availability, bookings, identity checks and emergency routing. A guardrail stops
 the bot from claiming anything happened that didn't.
 
-- **Live:** https://&lt;render-url&gt;
-- **Staff:** `/staff`, using the `STAFF_TOKEN` from Render's Environment tab.
+- **Live:** https://bright-smile-chatbot.onrender.com
+- **Staff:** https://bright-smile-chatbot.onrender.com/staff, using the `STAFF_TOKEN` from Render's
+  Environment tab.
 - **Free tier:** the first request after the service has been idle can take about a minute.
 - **Video:** [link]. 0:00 intro · _:__ new patient · _:__ emergency · _:__ reschedule/cancel ·
   _:__ family · _:__ staff page · _:__ evals/CI · _:__ design
