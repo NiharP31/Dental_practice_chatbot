@@ -1,6 +1,7 @@
 """LLM providers behind one call: complete(system, history, tools) -> assistant message.
 
-History uses a provider-neutral format so a turn can fall back from Gemini to DeepSeek mid-way:
+Chain: GEMINI_MODEL -> GEMINI_FALLBACK_MODEL -> DeepSeek (if keyed) -> caller's canned reply.
+History uses a provider-neutral format so a turn can fall back to another provider mid-way:
   {"role": "user", "text": str}
   {"role": "assistant", "text": str, "tool_calls": [{"id", "name", "args", "sig"?}]}
   {"role": "tool", "id": str, "name": str, "result": dict}
@@ -8,12 +9,36 @@ History uses a provider-neutral format so a turn can fall back from Gemini to De
 import base64
 import json
 import logging
+import re
+import threading
+import time
 import uuid
 
 from app import config
 
 log = logging.getLogger("llm")
 TIMEOUT_S = 25
+MAX_RETRY_WAIT_S = 30  # a longer suggested wait means: move on to the next model instead
+DEFAULT_RETRY_WAIT_S = 2
+
+_throttle_lock, _last_call = threading.Lock(), [0.0]
+
+
+def throttle() -> None:
+    """Space calls at least 60/LLM_MAX_RPM seconds apart (evals set it; 0 = off)."""
+    if config.LLM_MAX_RPM <= 0:
+        return
+    with _throttle_lock:
+        wait = _last_call[0] + 60 / config.LLM_MAX_RPM - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_call[0] = time.monotonic()
+
+
+def suggested_delay(err) -> float:
+    """Seconds from a 429's RetryInfo ("retryDelay": "17s"), or a short default."""
+    m = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s", str(getattr(err, "details", "")) + str(err))
+    return float(m[1]) if m else DEFAULT_RETRY_WAIT_S
 
 
 class LLMUnavailable(Exception):
@@ -21,14 +46,31 @@ class LLMUnavailable(Exception):
 
 
 class Gemini:
-    name = "gemini"
-
-    def __init__(self):
+    def __init__(self, model: str):
         from google import genai
-        from google.genai import types
-        self.types = types
-        self.client = genai.Client(api_key=config.GEMINI_API_KEY,
-                                   http_options=types.HttpOptions(timeout=TIMEOUT_S * 1000))
+        from google.genai import errors, types
+        self.types, self.errors, self.model, self.name = types, errors, model, f"gemini:{model}"
+        # SDK retries off: we decide (one 429 retry, then the next model) so a patient never waits minutes.
+        self.client = genai.Client(api_key=config.GEMINI_API_KEY, http_options=types.HttpOptions(
+            timeout=TIMEOUT_S * 1000, retry_options=types.HttpRetryOptions(attempts=1)))
+        self.skip_until = 0.0  # monotonic time; set when a 429 asks us to wait longer than we'll block
+
+    def _generate(self, **kw):
+        if time.monotonic() < self.skip_until:
+            raise LLMUnavailable(f"{self.model} rate-limited for {self.skip_until - time.monotonic():.0f}s more")
+        for attempt in (1, 2):
+            throttle()
+            try:
+                return self.client.models.generate_content(model=self.model, **kw)
+            except self.errors.ClientError as e:
+                delay = suggested_delay(e)
+                if e.code == 429 and delay > MAX_RETRY_WAIT_S:
+                    # e.g. the free tier's daily cap: don't spend a call (and a throttle slot) per turn on it
+                    self.skip_until = time.monotonic() + delay
+                if e.code != 429 or attempt == 2 or delay > MAX_RETRY_WAIT_S:
+                    raise
+                log.warning("rate_limited model=%s retry_in=%.1fs", self.model, delay)
+                time.sleep(delay)
 
     def complete(self, system: str, history: list[dict], tools: list[dict]) -> dict:
         t = self.types
@@ -39,7 +81,7 @@ class Gemini:
                 for x in tools])],
             automatic_function_calling=t.AutomaticFunctionCallingConfig(disable=True),
         )
-        resp = self.client.models.generate_content(model=config.GEMINI_MODEL, contents=self._contents(history), config=cfg)
+        resp = self._generate(contents=self._contents(history), config=cfg)
         if not resp.candidates or not resp.candidates[0].content or not resp.candidates[0].content.parts:
             raise LLMUnavailable(f"empty Gemini response: {getattr(resp, 'prompt_feedback', None)}")
         text, calls = [], []
@@ -95,6 +137,7 @@ class DeepSeek:
                 messages.append(msg)
             else:
                 messages.append({"role": "tool", "tool_call_id": m["id"], "content": json.dumps(m["result"], default=str)})
+        throttle()
         resp = self.client.chat.completions.create(
             model=config.DEEPSEEK_MODEL, messages=messages,
             tools=[{"type": "function", "function": x} for x in tools],
@@ -113,8 +156,8 @@ class DeepSeek:
 
 def providers() -> list:
     out = []
-    if config.GEMINI_API_KEY and config.GEMINI_MODEL:
-        out.append(Gemini())
+    if config.GEMINI_API_KEY:
+        out += [Gemini(m) for m in (config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL) if m]
     if config.DEEPSEEK_API_KEY and config.DEEPSEEK_MODEL:
         out.append(DeepSeek())
     return out

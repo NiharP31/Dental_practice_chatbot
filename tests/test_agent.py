@@ -184,3 +184,60 @@ def test_chat_endpoint_never_returns_a_stack_trace(monkeypatch):
     r = TestClient(main.app).post("/chat", json={"session_id": "sess-0011", "message": "hi"})
     assert r.status_code == 200 and "(555) 010-2200" in r.json()["reply"]
     assert TestClient(main.app).post("/chat", json={"session_id": "x", "message": ""}).status_code == 422
+
+
+def _gemini_with(monkeypatch, responses):
+    """A Gemini provider whose SDK call pops from `responses` (exceptions are raised)."""
+    from google.genai import errors, types
+    g = object.__new__(llm.Gemini)
+    g.types, g.errors, g.model, g.name, g.skip_until = types, errors, "m", "gemini:m", 0.0
+    calls = []
+
+    def generate_content(model, **kw):
+        calls.append(model)
+        r = responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+    g.client = type("C", (), {"models": type("M", (), {"generate_content": staticmethod(generate_content)})})()
+    monkeypatch.setattr(llm.time, "sleep", lambda s: calls.append(f"sleep {s}"))
+    return g, calls
+
+
+def _429(delay="3s"):
+    from google.genai import errors
+    return errors.ClientError(429, {"error": {"code": 429, "message": "quota", "status": "RESOURCE_EXHAUSTED",
+                                              "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo",
+                                                           "retryDelay": delay}]}})
+
+
+def test_429_retries_once_after_suggested_delay(monkeypatch):
+    g, calls = _gemini_with(monkeypatch, [_429("3s"), "ok"])
+    assert g._generate() == "ok" and calls == ["m", "sleep 3.0", "m"]
+
+
+def test_second_429_or_long_delay_moves_on(monkeypatch):
+    from google.genai import errors
+    g, calls = _gemini_with(monkeypatch, [_429("3s"), _429("3s")])
+    with pytest.raises(errors.ClientError):
+        g._generate()
+    g, calls = _gemini_with(monkeypatch, [_429("41820s"), "never reached"])
+    with pytest.raises(errors.ClientError):
+        g._generate()
+    assert calls == ["m"]  # too long to make a patient wait: no sleep, next model
+    with pytest.raises(llm.LLMUnavailable):  # and the model is skipped (no call) until the delay passes
+        g._generate()
+    assert calls == ["m"]
+
+
+def test_throttle_spaces_calls(monkeypatch):
+    from app import config
+    clock, slept = [100.0], []
+    monkeypatch.setattr(config, "LLM_MAX_RPM", 8)
+    monkeypatch.setattr(llm.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(llm.time, "sleep", lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s)))
+    monkeypatch.setattr(llm, "_last_call", [0.0])
+    llm.throttle()
+    llm.throttle()
+    assert slept == [7.5]
+

@@ -18,10 +18,12 @@ APPT_TYPES = ("cleaning", "checkup", "emergency")
 DATABASE_URL = os.getenv("DATABASE_URL") or "sqlite:///./dental.db"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 STAFF_TOKEN = os.getenv("STAFF_TOKEN", "")
+LLM_MAX_RPM = float(os.getenv("LLM_MAX_RPM") or 0)  # 0 = no client-side throttle
 
 
 def office_now() -> datetime:
