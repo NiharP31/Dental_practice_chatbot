@@ -12,7 +12,6 @@ import argparse
 import json
 import logging
 import os
-import re
 import sys
 import tempfile
 import time
@@ -123,7 +122,11 @@ def unbacked_claims(replies: list[str], turn_changed: list[bool], booked_days: l
 JUDGE_PROMPT = """You review a dental front-desk chatbot transcript. Score the ASSISTANT's tone 1-5:
 5 = warm, brief, human, adapts to the situation (calm for emergencies, reassuring for worry, efficient when rushed);
 3 = fine but generic or a bit long; 1 = robotic, rude, rambling or tone-deaf.
-Reply with JSON only: {"score": <1-5>, "why": "<one short sentence>"}"""
+Give the score and a one-sentence reason."""
+
+# Structured output: the API guarantees JSON matching this schema, so the score always parses.
+JUDGE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["score", "reason"],
+                "properties": {"score": {"type": "integer", "enum": [1, 2, 3, 4, 5]}, "reason": {"type": "string"}}}
 
 
 def judge(transcript: str) -> tuple[int | None, str]:
@@ -132,13 +135,13 @@ def judge(transcript: str) -> tuple[int | None, str]:
     import anthropic
     try:
         r = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=2).messages.create(
-            model=config.ANTHROPIC_MODEL, max_tokens=300, system=JUDGE_PROMPT,
-            messages=[{"role": "user", "content": transcript}])
-        m = re.search(r"\{.*\}", "".join(b.text for b in r.content if b.type == "text"), re.S)
-        d = json.loads(m[0])
-        return int(d["score"]), str(d.get("why", ""))
+            model=config.ANTHROPIC_MODEL, max_tokens=1024, system=JUDGE_PROMPT,
+            messages=[{"role": "user", "content": transcript}],
+            output_config={"format": {"type": "json_schema", "schema": JUDGE_SCHEMA}})
+        d = json.loads(next(b.text for b in r.content if b.type == "text"))
+        return d["score"], d["reason"]
     except Exception as e:  # tone is informational; never fail the run over it
-        return None, f"judge error: {type(e).__name__}"
+        return None, f"judge error: {type(e).__name__}: {str(e)[:120]}"
 
 
 def run_scenario(sc: dict, use_judge: bool) -> dict:
@@ -200,6 +203,7 @@ def main() -> int:
     ap.add_argument("--smoke-fallback", action="store_true", help="run the smoke_fallback subset on gemini")
     ap.add_argument("--judge", action="store_true", help="add an LLM-judge tone score (not gating)")
     ap.add_argument("-v", "--verbose", action="store_true", help="print transcripts of failing scenarios")
+    ap.add_argument("--repeat", type=int, default=1, help="run everything N times and report pass rates")
     args = ap.parse_args()
 
     provider = "gemini" if args.smoke_fallback else (os.getenv("EVAL_PROVIDER") or "claude")
@@ -223,10 +227,21 @@ def main() -> int:
           f"{config.LLM_MAX_RPM or 'off'}/min | {len(scenarios)} scenarios\n")
 
     results = []
-    for sc in scenarios:
-        r = run_scenario(sc, args.judge)
-        results.append(r)
-        print(f"{'PASS' if r['passed'] else 'FAIL'}  {r['id']}" + ("" if r["passed"] else f": {r['fails'][0]}"), flush=True)
+    for run in range(1, args.repeat + 1):
+        for sc in scenarios:
+            r = {**run_scenario(sc, args.judge), "run": run}
+            results.append(r)
+            print(f"{'PASS' if r['passed'] else 'FAIL'}  {r['id']}" + (f" (run {run})" if args.repeat > 1 else "")
+                  + ("" if r["passed"] else f": {r['fails'][0]}"), flush=True)
+
+    if args.repeat > 1:  # LLMs are nondeterministic: the pass rate is the honest number
+        print(f"\n| Scenario | Pass rate ({args.repeat} runs) | Avg cost | Avg tone |")
+        print("|---|---|---|---|")
+        for sc in scenarios:
+            rs = [r for r in results if r["id"] == sc["id"]]
+            tones = [r["tone"] for r in rs if r["tone"] is not None]
+            print(f"| {sc['id']} | {sum(r['passed'] for r in rs)}/{len(rs)} | ${sum(r['cost_usd'] for r in rs) / len(rs):.4f} | "
+                  + (f"{sum(tones) / len(tones):.1f}/5" if tones else "-") + " |")
 
     print("\n| Scenario | Result | Turns | LLM calls | Est. cost | Guard replaced | Tone | Time |")
     print("|---|---|---|---|---|---|---|---|")
