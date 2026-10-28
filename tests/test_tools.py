@@ -1,14 +1,21 @@
 import threading
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
+from app import tools
 from app.db import Appointment, IdempotencyKey, Slot, StaffAlert
-from app.tools import (ToolError, UnclearDate, book, find_slots, modify, notify_staff, register_patient,
+from app.tools import (ToolError, UnclearDate, find_slots, modify, notify_staff, register_patient,
                        verify_patient)
-from tests.conftest import NOW, add_day, add_patient, patient_says, verify
+from tests.conftest import NOW, add_day, add_patient, offer, patient_says, verify
 
 THU, FRI = date(2026, 10, 29), date(2026, 10, 30)
+
+
+def book(db, sid, turn, patient_ids, slot_ids, *a, **kw):
+    """tools.book on slots a search in this session offered (book refuses any others)."""
+    offer(db, sid, slot_ids)
+    return tools.book(db, sid, turn, patient_ids, slot_ids, *a, **kw)
 
 
 def verified(db, sid="s1", **kw) -> int:
@@ -199,7 +206,30 @@ def test_book_rejects_past_slot(db):
     pid = verified(db)
     with pytest.raises(ToolError) as e:
         book(db, "s1", 1, [pid], [ids["08:30"]], "cleaning", now=NOW)
-    assert e.value.code == "bad_slot"
+    assert e.value.code == "bad_slot" and "already passed" in e.value.message
+
+
+def test_book_only_takes_slots_this_session_was_offered(db):
+    ids = add_day(db, THU)
+    pid = verified(db)
+    with pytest.raises(ToolError) as e:
+        tools.book(db, "s1", 1, [pid], [ids["09:00"]], "cleaning", now=NOW)  # never searched
+    assert e.value.code == "not_offered"
+    offered = find_slots(db, "cleaning", "thursday", now=NOW, session_id="s1")["options"][0]["slot_ids"]
+    assert tools.book(db, "s1", 1, [pid], offered, "cleaning", now=NOW)["booked"]
+    with pytest.raises(ToolError) as e:  # offered to a different session doesn't count
+        tools.book(db, "s2", 1, [pid], [ids["10:00"]], "cleaning", now=NOW)
+    assert e.value.code in ("not_offered", "not_verified")
+
+
+def test_book_rejects_slot_outside_office_hours(db):
+    pid = verified(db)
+    s = Slot(start=datetime(2026, 11, 1, 10, 0), status="open")  # a Sunday
+    db.add(s)
+    db.commit()
+    with pytest.raises(ToolError) as e:
+        book(db, "s1", 1, [pid], [s.id], "cleaning", now=NOW)
+    assert e.value.code == "bad_slot" and "office hours" in e.value.message
 
 
 # --- modify -------------------------------------------------------------------------------

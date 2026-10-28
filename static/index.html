@@ -113,10 +113,10 @@ function render() {
     `<span class="sr-only">${m.who === "me" ? "You said:" : m.who === "bot" ? "Riley said:" : ""}</span>${format(m.text)}</div>`
   ).join("") + (busy ? '<div class="msg bot typing">Riley is typing...</div>' : "");
   $("chips").innerHTML = "";
-  for (const c of busy ? [] : state.chips) {
+  for (const c of busy ? [] : state.chips) {  // a starter string, or a slot option {label, slot_ids, patient_ids}
     const b = document.createElement("button");
-    b.className = "chip"; b.type = "button"; b.textContent = c;
-    b.onclick = () => submit(c);
+    b.className = "chip"; b.type = "button"; b.textContent = c.label ?? c;
+    b.onclick = () => submit(c.label ?? c, c.slot_ids ? c : null);
     $("chips").appendChild(b);
   }
   $("feedback").classList.toggle("show", !state.rated && state.turn >= 2 && !busy);
@@ -135,13 +135,14 @@ async function post(path, body, timeoutMs = 45000) {
   } finally { clearTimeout(t); }
 }
 
-async function submit(text) {
+async function submit(text, option = null) {
   text = text.trim();
   if (!text || busy) return;
   state.turn += 1;
   state.messages.push({ who: "me", text });
   state.chips = []; busy = true; input.value = ""; save(); render();
   const body = { session_id: state.session, message: text, turn: state.turn };
+  if (option) { body.slot_ids = option.slot_ids; if (option.patient_ids) body.patient_ids = option.patient_ids; }
   let res = null;
   for (let attempt = 0; attempt < 2 && !res; attempt++) {
     try { res = await post("/chat", body); }  // same turn number, so a retry can't double-book

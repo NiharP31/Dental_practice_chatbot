@@ -75,3 +75,11 @@ def verify(db, session_id: str, full_name: str, dob: str, **kw):
     from app.tools import verify_patient
     patient_says(db, session_id, f"I'm {full_name}, born {dob}")
     return verify_patient(db, session_id, full_name, dob, now=kw.pop("now", NOW), **kw)
+
+
+def offer(db, session_id: str, slot_ids) -> None:
+    """Record slots as offered by a search in this session (book refuses anything else)."""
+    from app.tools import get_conversation, set_state
+    conv = get_conversation(db, session_id)
+    set_state(conv, offered_slots=sorted(set((conv.state or {}).get("offered_slots", [])) | set(slot_ids)))
+    db.commit()

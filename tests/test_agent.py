@@ -4,8 +4,8 @@ from datetime import date
 import pytest
 
 from app import agent, guard, llm
-from app.db import Appointment, Conversation, StaffAlert
-from tests.conftest import NOW, add_day, add_patient
+from app.db import Appointment, Conversation, Slot, StaffAlert
+from tests.conftest import NOW, add_day, add_patient, offer
 
 THU = NOW.date().replace(day=29)
 
@@ -46,7 +46,8 @@ def test_full_booking_turn(db, script):
               call("find_slots", appt_type="cleaning", when="thursday morning")]
     queue.append(say("I looked at Thursday morning. Which works?"))
     r = agent.run_turn(db, "sess-0001", "I'm Daniel Reyes, born March 12 1984, need a cleaning thursday morning", now=NOW)
-    assert r["options"][0] == "Thursday, October 29 at 8:00 AM" and r["turn"] == 1
+    assert r["options"][0] == {"label": "Thursday, October 29 at 8:00 AM", "slot_ids": [ids["08:00"]]}
+    assert r["turn"] == 1
 
     queue += [call("book", patient_ids=[1], slot_ids=[ids["08:00"]], appt_type="cleaning"),
               say("You're all set for Thursday at 8:00 AM!")]
@@ -94,6 +95,7 @@ def test_llm_dies_after_booking_reports_what_tool_confirmed(db, script):
     queue, _ = script
     ids = add_day(db, THU)
     add_patient(db)
+    offer(db, "sess-0006", [ids["09:00"]])
     queue += [call("verify_patient", full_name="Daniel Reyes", dob="1984-03-12"),
               call("book", patient_ids=[1], slot_ids=[ids["09:00"]], appt_type="checkup"),
               llm.LLMUnavailable()]
@@ -109,13 +111,18 @@ def test_max_rounds_stops_the_loop(db, script):
     assert "(555) 010-2200" in r["reply"] and not queue
 
 
-def test_red_flag_alerts_staff_once_and_leads_with_911(db, script):
+def test_red_flag_turn_is_code_only_and_alerts_staff_once(db, script):
+    """Live bug: the model paraphrased the code-written 911 text, so the patient read it twice."""
     queue, seen = script
-    queue += [say("I'm so sorry. Can you tell me when this started?"), say("Thank you, hang tight.")]
     r = agent.run_turn(db, "sess-0008", "my face is swelling and it's hard to swallow", now=NOW)
-    assert r["reply"].startswith(guard.EMERGENCY_911) and "911" in r["reply"]
+    assert r["reply"] == guard.RED_FLAG_REPLY and r["reply"].count("911") == 1 and r["options"] == []
+    assert seen == []  # no LLM call on the red-flag turn
+    conv = db.get(Conversation, "sess-0008")
+    assert "[System note: red-flag" in conv.messages[0]["text"] and conv.messages[1]["text"] == guard.RED_FLAG_REPLY
+    queue.append(say("I'm right here with you. Is someone able to drive you or call 911?"))
+    r = agent.run_turn(db, "sess-0008", "the swelling is spreading to my eye", now=NOW)
+    assert r["reply"].count("911") == 1  # later turns: the model, with the note, and no code prefix
     assert "[System note: red-flag" in seen[0][-1]["text"]
-    agent.run_turn(db, "sess-0008", "the swelling is spreading to my eye", now=NOW)
     alerts = db.query(StaffAlert).all()
     assert len(alerts) == 1 and alerts[0].priority == "urgent"
 
@@ -179,6 +186,7 @@ def _failover_turn(db, monkeypatch, first, second):
     """`first` books (one tool call) and then dies; `second` must finish the same turn."""
     ids = add_day(db, THU)
     add_patient(db)
+    offer(db, "sess-fail", ids.values())
     monkeypatch.setattr(llm, "_PROVIDERS", [first, second])
     r = agent.run_turn(db, "sess-fail", "Daniel Reyes 1984-03-12, cleaning Thursday 9am", now=NOW)
     return ids, r
@@ -367,6 +375,7 @@ def test_restating_an_earlier_booking_is_not_replaced(db, script):
     queue, _ = script
     ids = add_day(db, THU)
     add_patient(db)
+    offer(db, "sess-0012", [ids["08:00"]])
     queue += [call("verify_patient", full_name="Daniel Reyes", dob="1984-03-12"),
               call("book", patient_ids=[1], slot_ids=[ids["08:00"]], appt_type="cleaning"),
               say("Booked for Thursday, October 29 at 8:00 AM.")]
@@ -382,6 +391,7 @@ def test_other_sessions_appointments_do_not_back_claims(db, script):
     queue, _ = script
     ids = add_day(db, THU)
     add_patient(db)
+    offer(db, "sess-0013", [ids["08:00"]])
     queue += [call("verify_patient", full_name="Daniel Reyes", dob="1984-03-12"),
               call("book", patient_ids=[1], slot_ids=[ids["08:00"]], appt_type="cleaning"), say("Booked.")]
     agent.run_turn(db, "sess-0013", "book", now=NOW)
@@ -439,7 +449,8 @@ def test_red_flag_revealed_only_in_screening_gets_the_911_path(db, script):
               call("find_slots", appt_type="emergency", when="as soon as possible"),
               say("Is someone with you right now?")]
     r2 = agent.run_turn(db, "sess-tri", "Actually yes, my cheek has been swelling up since this morning. Lower left, about an 8.", now=NOW)
-    assert r2["reply"].startswith(guard.EMERGENCY_911) and r2["options"] == []
+    assert r2["reply"] == guard.RED_FLAG_REPLY and r2["options"] == []
+    assert len(queue) == 2  # no LLM call after triage flagged it: nothing to paraphrase the 911 text
     [alert] = db.query(StaffAlert).all()  # one urgent alert, updated with the screening
     assert alert.summary.startswith("RED FLAG") and "facial swelling YES" in alert.summary
 
@@ -467,3 +478,76 @@ def test_screening_cannot_loop_even_if_the_model_keeps_re_asking(db, script):
     assert alert.summary.startswith("SCREENING DECLINED") and "trouble breathing/swallowing not answered" in alert.summary
     from app.tools import find_slots
     assert find_slots(db, "emergency", "as soon as possible", now=NOW, session_id="sess-loop")["options"]
+
+
+def _offer_thursday(db, script, sid):
+    queue, _ = script
+    ids = add_day(db, THU)
+    add_patient(db)
+    queue += [call("verify_patient", full_name="Daniel Reyes", dob="March 12 1984"),
+              call("find_slots", appt_type="cleaning", when="thursday morning"), say("Which works?")]
+    r = agent.run_turn(db, sid, "I'm Daniel Reyes, born March 12 1984, need a cleaning thursday morning", now=NOW)
+    return ids, r["options"]
+
+
+def test_tapped_option_tells_the_model_exactly_which_ids_to_book(db, script):
+    queue, seen = script
+    _, options = _offer_thursday(db, script, "sess-tap")
+    queue += [call("book", patient_ids=[1], slot_ids=options[1]["slot_ids"], appt_type="cleaning"),
+              say("Booked for Thursday, October 29 at 10:00 AM.")]
+    agent.run_turn(db, "sess-tap", options[1]["label"], slot_ids=options[1]["slot_ids"], now=NOW)
+    note = seen[-2][-1]["text"]
+    assert f"selected option 2 ({options[1]['label']}): slot_ids {options[1]['slot_ids']}" in note
+    assert db.query(Appointment).count() == 1
+
+
+def test_typed_label_maps_like_a_tap_but_unoffered_ids_do_not(db, script):
+    queue, seen = script
+    _, options = _offer_thursday(db, script, "sess-type")
+    queue.append(say("Shall I book it?"))
+    agent.run_turn(db, "sess-type", "  " + options[0]["label"].lower(), now=NOW)
+    assert "selected option 1" in seen[-1][-1]["text"]
+    queue.append(say("Which one?"))
+    agent.run_turn(db, "sess-type", "that one", slot_ids=[999], now=NOW)  # not something we offered
+    assert "selected option" not in seen[-1][-1]["text"]
+
+
+def test_unbacked_passed_claim_is_replaced_with_the_same_options(db, script, caplog):
+    """Live bug: the model said a future offered slot 'has already passed' and never called book."""
+    queue, _ = script
+    _, options = _offer_thursday(db, script, "sess-neg")
+    queue.append(say("Sorry, Thursday, October 29 at 8:00 AM has already passed. Want another day?"))
+    with caplog.at_level("WARNING", logger="agent"):
+        r = agent.run_turn(db, "sess-neg", options[0]["label"], slot_ids=options[0]["slot_ids"], now=NOW)
+    assert "unbacked_negative_claim" in caplog.text
+    assert "already passed" not in r["reply"] and r["options"] == options
+    assert all(o["label"] in r["reply"] for o in options)
+
+
+def test_negative_claim_backed_by_book_error_is_kept(db, script):
+    queue, _ = script
+    ids, options = _offer_thursday(db, script, "sess-taken")
+    db.get(Slot, ids["08:00"]).status = "booked"  # someone else got it first
+    db.commit()
+    queue += [call("book", patient_ids=[1], slot_ids=[ids["08:00"]], appt_type="cleaning"),
+              say("Sorry, that time was just taken. Would 10:00 AM work?")]
+    r = agent.run_turn(db, "sess-taken", options[0]["label"], slot_ids=options[0]["slot_ids"], now=NOW)
+    assert r["reply"] == "Sorry, that time was just taken. Would 10:00 AM work?"
+
+
+def test_family_options_carry_patient_ids(db, script):
+    queue, _ = script
+    add_day(db, THU)
+    queue += [call("find_slots", appt_type="cleaning", when="thursday", count=2, patient_ids=[4, 5]), say("Which?")]
+    r = agent.run_turn(db, "sess-fam", "cleanings for both kids thursday", now=NOW)
+    assert r["options"] and all(o["patient_ids"] == [4, 5] and len(o["slot_ids"]) == 2 for o in r["options"])
+
+
+def test_earlier_options_are_tappable_again_when_the_reply_names_them(db, script):
+    """Eval failure: a registration turn re-listed the times in text but showed no buttons to tap."""
+    queue, _ = script
+    _, options = _offer_thursday(db, script, "sess-keep")
+    queue.append(say(f"Thanks! Which time would you like: {options[0]['label']} or {options[1]['label']}?"))
+    assert agent.run_turn(db, "sess-keep", "my phone is 555-201-3344", now=NOW)["options"] == options[:2]
+    queue.append(say("No problem. What day would suit you better?"))  # rejected: no stale buttons
+    assert agent.run_turn(db, "sess-keep", "none of those work", now=NOW)["options"] == []

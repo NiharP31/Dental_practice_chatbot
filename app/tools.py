@@ -192,10 +192,11 @@ SCREENING_ASK = ("In ONE short message ask: which tooth or area, pain from 0 to 
 
 def find_slots(db: Session, appt_type: str, when: str, count: int = 1,
                exclude_slot_ids: list[int] | None = None, now: datetime | None = None,
-               session_id: str | None = None) -> dict:
+               session_id: str | None = None, patient_ids: list[int] | None = None) -> dict:
     """Up to 3 open options in the window the patient described. count>1 = back-to-back run
     (family). Options are spread across different days/times rather than 3 adjacent slots.
-    Emergency slots are only offered after the red-flag screening (triage_emergency) came back clear."""
+    Emergency slots are only offered after the red-flag screening (triage_emergency) came back clear.
+    Every slot offered is remembered for the session: book only accepts slots a search offered."""
     if appt_type not in config.APPT_TYPES:
         raise ToolError("bad_type", f"appt_type must be one of {', '.join(config.APPT_TYPES)}.")
     if appt_type == "emergency" and session_id is not None:
@@ -223,13 +224,19 @@ def find_slots(db: Session, appt_type: str, when: str, count: int = 1,
 
     result = {"searched": w.describe(), "options": [
         {"slot_ids": [s.id for s in r], "when": fmt_slot(r[0].start),
-         **({"times": [fmt_slot(s.start).split(" at ")[1] for s in r]} if count > 1 else {})}
+         **({"times": [fmt_slot(s.start).split(" at ")[1] for s in r]} if count > 1 else {}),
+         **({"patient_ids": patient_ids} if patient_ids and len(patient_ids) == count else {})}
         for r in picked]}
     if not picked:
         later = _open_runs(db, Window(w.last + timedelta(days=1), w.last + timedelta(days=60)), count, now, exclude)
         result["message"] = "No openings in that window."
         if later:
             result["next_available"] = {"slot_ids": [s.id for s in later[0]], "when": fmt_slot(later[0][0].start)}
+    if session_id is not None:
+        offered = [sid for o in [*result["options"], result.get("next_available") or {}] for sid in o.get("slot_ids", [])]
+        conv = get_conversation(db, session_id)
+        set_state(conv, offered_slots=sorted(set((conv.state or {}).get("offered_slots", [])) | set(offered)))
+        db.commit()  # a failed book later this turn rolls back; the offer must survive it
     return result
 
 
@@ -264,13 +271,22 @@ def book(db: Session, session_id: str, turn: int, patient_ids: list[int], slot_i
     if not set(patient_ids) <= _authorized_ids(db, conv):
         raise ToolError("not_verified", "Every patient must be verified (name + DOB), registered, "
                                         "or a dependent of a verified guardian first.")
+    if not set(slot_ids) <= set((conv.state or {}).get("offered_slots", [])):
+        raise ToolError("not_offered", "Those times weren't offered in this chat. Search with find_slots and "
+                                       "offer what it returns.")
 
     try:
         booked = []
         for pid, sid in zip(patient_ids, slot_ids):
             slot = db.get(Slot, sid)
-            if slot is None or slot.start <= now:
-                raise ToolError("bad_slot", f"Slot {sid} isn't a bookable future time. Search again.")
+            # The reasons are written for the patient: the model tells them exactly this.
+            if slot is None:
+                raise ToolError("bad_slot", "That time isn't in our schedule. Nothing was booked; offer other times.")
+            if slot.start <= now:
+                raise ToolError("bad_slot", "That time has already passed. Nothing was booked; offer other times.")
+            if (slot.start.weekday() not in config.OPEN_WEEKDAYS or slot.start.hour < config.OPEN_HOUR
+                    or slot.start + config.SLOT_LEN > datetime.combine(slot.start.date(), time(config.CLOSE_HOUR))):
+                raise ToolError("bad_slot", "That time is outside our office hours. Nothing was booked; offer other times.")
             claimed = db.execute(update(Slot).where(Slot.id == sid, Slot.status == "open")
                                  .values(status="booked")).rowcount
             if claimed == 0:

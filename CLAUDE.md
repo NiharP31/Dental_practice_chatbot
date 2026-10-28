@@ -31,12 +31,16 @@ or claims anything a tool didn't confirm.
 
 ## Safety principles
 - **Unbacked claims:** booking/change claims and "I've told the team" are checked against the DB by
-  `app/guard.py`. The eval runner calls the same functions; don't fork the rules.
+  `app/guard.py`; so is "that time has passed/is taken" (only a tool may say it). The eval runner
+  calls the same functions; don't fork the rules.
 - **Identity:** name + DOB verification before revealing or changing anything, and `verify_patient`
   accepts only a DOB the patient typed this session (DOB provenance).
 - **Emergencies:** `notify_staff` works before registration. `triage_emergency` (code) routes any red
   flag to the 911 text, writes the alert summary, and gates emergency slots. Screening never deadlocks.
+  A red-flag turn makes no further LLM call: the reply is the code-written 911 text only.
 - **Changes:** reschedule/cancel need a read-back and a "yes" on a later turn. Bookings don't.
+- `book` is the only judge of a slot (offered this session, future, open, in hours). A tapped quick
+  reply sends its slot ids; the agent tells the model to book exactly those.
 - Slot claims are `UPDATE … WHERE status='open'`; bookings are idempotent per session, turn and request.
 
 ## Evals and tests

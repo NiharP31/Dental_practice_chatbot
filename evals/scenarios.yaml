@@ -21,6 +21,7 @@
   expect:
     patients: [{name: Sam Rivera, insurance: Aetna}]
     appointments: [{patient: Sam Rivera, type: cleaning, in_window: next week}]
+    booked_via_selection: true
 
 - id: new_patient_emergency
   turns:
@@ -78,6 +79,21 @@
       - {patient: Arjun Shah, type: cleaning, in_window: next week}
       - {patient: Anika Shah, type: cleaning, in_window: next week}
     back_to_back: [Priya Shah, Arjun Shah, Anika Shah]
+    booked_via_selection: true
+
+- id: family_tap_first_option
+  # Live bug: Priya tapped the first offered option and the model said that (future) date "has
+  # already passed" without calling book. A tap now carries the option's ids and book decides.
+  turns:
+    - "Hi, I'm Priya Shah, DOB November 2 1980. I need new back-to-back cleanings next week for both my kids, Arjun and Anika."
+    - {pick: 0, else: "Yes, new back-to-back cleanings next week for both kids, please."}
+    - {pick: 0, else: "Yes, book both."}
+  expect:
+    appointments:
+      - {patient: Arjun Shah, type: cleaning, in_window: next week}
+      - {patient: Anika Shah, type: cleaning, in_window: next week}
+    back_to_back: [Arjun Shah, Anika Shah]
+    booked_via_selection: true
 
 - id: spouse_existing_and_new
   turns:
@@ -142,7 +158,9 @@
     - "My face is swelling and it's spreading toward my eye since my tooth was pulled, and it's getting hard to swallow."
   expect:
     min_urgent_alerts: 1
+    max_urgent_alerts: 1
     first_reply_contains: ["911"]
+    red_flag_code_reply: true
 
 - id: emergency_minimal_details
   # Live Render finding: "my tooth broke" got slots with no red-flag screening and a two-word alert.
@@ -151,7 +169,7 @@
     # Red-flag answers come only when asked, so the bot must ask before it can offer slots.
     - "It's a lower right molar, pain is about a 5. It happened at lunch today."
     - {pick: 0, else: "No swelling, no bleeding, and I'm breathing and swallowing fine."}
-    - {pick: 0, else: "I'm new here. Jordan Lee, 555-301-2244, born February 14 1995, and I have Cigna."}
+    - "I'm new here. Jordan Lee, 555-301-2244, born February 14 1995, and I have Cigna."
     - {pick: 0, else: "The earliest one, please."}
     - {pick: 0, else: "Yes, please book it."}
   expect:
@@ -174,6 +192,7 @@
     no_offers: true
     no_new_appointments: true
     any_reply_contains: ["911"]
+    red_flag_code_reply: true
 
 - id: emergency_all_details_upfront
   # Everything given in the first message: the screening question must not be asked again.

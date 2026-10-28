@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import config, guard, llm, tools
+from app.db import Slot
 from app.prompt import NOTE_MARKER, SYSTEM, clock_note
 
 log = logging.getLogger("agent")
@@ -43,6 +44,8 @@ class FindSlotsArgs(BaseModel):
                                   "'as soon as possible'. Do not convert to dates.")
     count: int = Field(1, ge=1, le=6, description="Number of back-to-back slots, one per family member")
     exclude_slot_ids: list[int] = Field(default_factory=list, description="slot_ids the patient already turned down")
+    patient_ids: list[int] = Field(default_factory=list, description="Family bookings: who the times are for, in "
+                                                                     "order (one per slot); empty otherwise")
 
 
 class BookArgs(BaseModel):
@@ -90,6 +93,7 @@ class Turn:
     registered: bool = False  # register_patient succeeded this turn
     action_failed: bool = False  # a book/modify returned an error this turn
     triage_red: bool = False  # the emergency screening found a red flag this turn
+    negative_backed: bool = False  # a tool said a time can't be had (book/modify error, empty search)
     confirmations: list[str] = field(default_factory=list)
 
 
@@ -149,6 +153,8 @@ def dispatch(t: Turn, name: str, raw_args: dict) -> dict:
         t.registered = True
     if name in ("book", "modify") and "error" in result:
         t.action_failed = True
+    if name in ("book", "modify", "find_slots") and ("error" in result or result.get("options") == []):
+        t.negative_backed = True
     if name == "triage_emergency" and result.get("red_flag"):
         t.triage_red = True
     if name == "triage_emergency":  # remember an incomplete screening so the next turn can't loop on it
@@ -167,7 +173,30 @@ def dispatch(t: Turn, name: str, raw_args: dict) -> dict:
     return result
 
 
-def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, now: datetime | None = None) -> dict:
+def selected_option(offered: list[dict], text: str, slot_ids: list[int] | None,
+                    patient_ids: list[int] | None = None) -> int | None:
+    """Index of the offered option the patient tapped (its slot_ids) or typed (its exact label)."""
+    for i, o in enumerate(offered):
+        if slot_ids:
+            if o["slot_ids"] == slot_ids and patient_ids in (None, [], o.get("patient_ids", [])):
+                return i
+        elif text.strip().lower() == o["label"].lower():
+            return i
+    return None
+
+
+def reoffer(db: Session, offered: list[dict], now: datetime) -> tuple[str, list[dict]]:
+    """The guard's replacement for an unbacked "that time is gone": the offered times still open."""
+    still = [o for o in offered if all((s := db.get(Slot, i)) and s.status == "open" and s.start > now
+                                       for i in o["slot_ids"])]
+    if not still:
+        return "I'm sorry, I got that wrong. Which day would suit you? I'll check what's open.", []
+    return ("I'm sorry, I got that wrong: these times are still open. Which one would you like?\n"
+            + "\n".join(o["label"] for o in still)), still
+
+
+def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, now: datetime | None = None,
+             slot_ids: list[int] | None = None, patient_ids: list[int] | None = None) -> dict:
     now = now or config.office_now()
     conv = tools.get_conversation(db, session_id)
     state = dict(conv.state or {})
@@ -184,12 +213,14 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
     t = Turn(db, session_id, turn, now)
     history = list(conv.messages or [])
 
-    prefix, red = "", guard.red_flag(text)
-    if red:
-        prefix = guard.EMERGENCY_911
-        if not state.get("red_flag_alerted"):
-            tools.notify_staff(db, session_id, "urgent", f"RED FLAG symptoms reported in chat: {text[:500]}")
-            tools.set_state(conv, red_flag_alerted=True)
+    red = guard.red_flag(text)
+    # The first red flag of a session is answered by code alone (no LLM call, so the 911 advice is
+    # said exactly once); later turns go to the model with the note below.
+    first_red = red and not state.get("red_flag_alerted")
+    if first_red:
+        tools.notify_staff(db, session_id, "urgent", f"RED FLAG symptoms reported in chat: {text[:500]}")
+    offered = state.get("offered") or []
+    picked = selected_option(offered, text, slot_ids, patient_ids)
     # Delimit the patient's words so instructions inside them read as patient text; strip any tags
     # they typed so they can't close the block early.
     text = f"<patient_message>\n{PATIENT_TAGS.sub('', text)}\n</patient_message>"
@@ -201,12 +232,22 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
                  "this message doesn't answer it, don't ask again: call triage_emergency now with what you have, "
                  "null for the rest and patient_declined=true, then carry on with booking.]")
     if red:
-        text += (NOTE_MARKER + " red-flag symptoms detected. Your reply is shown right after a message that "
-                 "already told the patient to call 911 / go to the ER and that staff were alerted as urgent. Don't "
-                 "repeat either. Be calm, kind and brief: their safety comes first, so don't offer to book unless "
-                 "they say they're OK or ask for an appointment. You can ask whether someone is with them.]")
+        text += (NOTE_MARKER + " red-flag symptoms detected. Our system has told the patient in this chat to "
+                 "call 911 or go to the ER, that staff were alerted as urgent, and asked whether someone is with "
+                 "them. Don't repeat the alert, and mention 911 at most once, briefly. Be calm, kind and brief: "
+                 "their safety comes first, so don't offer to book unless they say they're OK or ask for an "
+                 "appointment.]")
+    if picked is not None and not red:
+        o = offered[picked]
+        log.info("selection session=%s option=%d slot_ids=%s", session_id, picked + 1, o["slot_ids"])
+        text += (NOTE_MARKER + f" the patient selected option {picked + 1} ({o['label']}): slot_ids "
+                 f"{o['slot_ids']}" + (f" for patient_ids {o['patient_ids']}" if o.get("patient_ids") else "")
+                 + ". Call book now with exactly these ids (for a reschedule: modify with this new_slot_id). Don't judge yourself whether this time is valid, "
+                 "open or passed: book decides, and if it returns an error, tell the patient its reason.]")
     history.append({"role": "user", "text": text})
     conv.messages = list(history)  # tools (verify_patient's DOB provenance) read this turn's patient text
+    if first_red:
+        return _finish(t, conv, history, guard.RED_FLAG_REPLY, [], red_flag=True)
 
     specs, reply, answered_by = tool_schemas(), None, []
     try:
@@ -220,6 +261,8 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
             for call in msg["tool_calls"]:
                 result = dispatch(t, call["name"], call["args"])
                 history.append({"role": "tool", "id": call["id"], "name": call["name"], "result": result})
+            if t.triage_red:  # screening found a red flag: code writes the reply, no further LLM call
+                break
         else:
             log.warning("max_rounds session=%s", session_id)
     except llm.LLMUnavailable:
@@ -233,6 +276,16 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
         tools.set_state(conv, pending_triage=None)
         db.commit()
 
+    if t.triage_red:
+        # A red flag that only came out in screening ("yes, my cheek is swelling") gets the same
+        # code-written reply as one typed up front; triage_emergency already alerted staff.
+        return _finish(t, conv, history, guard.RED_FLAG_REPLY, [], red_flag=True)
+    shown = t.options
+    if reply and offered and not t.negative_backed and guard.negative_claim(reply):
+        # "That time has passed / is taken" with no tool saying so: the model judged validity itself.
+        log.warning("unbacked_negative_claim session=%s reply=%r", session_id, guard.redact(reply[:300]))
+        reply, kept = reoffer(db, offered, now)
+        shown = [_as_found(o) for o in kept]
     if not reply:
         reply = guard.canned_reply()
         if t.confirmations:  # a change went through before the LLM failed: say so from the tool result
@@ -241,23 +294,36 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
             reply = ("I'm sorry, I'm having trouble on my end, but our dental team has been alerted that this is "
                      f"urgent. Please call us right away at {config.OFFICE_PHONE}, and if you have trouble "
                      "breathing or swallowing, or swelling that's spreading, call 911.")
-    if t.triage_red:
-        # A red flag that only came out in screening ("yes, my cheek is swelling") gets the same
-        # code-written 911 message as one typed up front; triage_emergency already alerted staff.
-        prefix = guard.EMERGENCY_911
-    reply = prefix + guard.check_reply(reply, t.action_succeeded, session_id,
-                                       tools.session_booked_days(db, session_id, now), registered=t.registered,
-                                       action_failed=t.action_failed,
-                                       alerted=tools.session_has_alert(db, session_id))
+    reply = guard.check_reply(reply, t.action_succeeded, session_id,
+                              tools.session_booked_days(db, session_id, now), registered=t.registered,
+                              action_failed=t.action_failed, alerted=tools.session_has_alert(db, session_id))
+    if not shown:  # earlier offers the reply names again ("which of these: Monday, Nov 9 at 8:00 AM...")
+        shown = [_as_found(o) for o in offered if o["label"].lower() in reply.lower()]
+    # Quick-reply buttons only while the patient is still choosing.
+    return _finish(t, conv, history, reply, [] if t.action_succeeded else shown)
 
+
+def _as_found(option: dict) -> dict:
+    """A quick-reply option back in find_slots' shape."""
+    return {"when": option["label"], **{k: option[k] for k in ("slot_ids", "patient_ids") if k in option}}
+
+
+def _finish(t: Turn, conv, history: list[dict], reply: str, found: list[dict], red_flag: bool = False) -> dict:
+    """Save what the patient saw and return it. `found` = find_slots options to show as quick replies."""
     if history[-1]["role"] == "assistant" and not history[-1]["tool_calls"]:
         history[-1] = {**history[-1], "text": reply}  # keep what the patient actually saw
     else:
         history.append({"role": "assistant", "text": reply, "tool_calls": []})
-    # Quick-reply buttons only while the patient is still choosing, and never alongside 911 advice.
-    options = [] if t.action_succeeded or t.triage_red else [o["when"] for o in t.options]
-    payload = {"reply": reply, "options": options, "turn": turn}
+    # Each quick reply carries its slot ids, so a tap books exactly what was offered.
+    options = [{"label": o["when"], "slot_ids": o["slot_ids"],
+                **({"patient_ids": o["patient_ids"]} if o.get("patient_ids") else {})} for o in found]
+    payload = {"reply": reply, "options": options, "turn": t.turn}
     conv.messages = history
-    tools.set_state(conv, turn=turn, last_reply=payload)
-    db.commit()
+    changes = {"turn": t.turn, "last_reply": payload}
+    if options or t.action_succeeded or red_flag:  # what a tap or a typed label selects next turn
+        changes["offered"] = options
+    if red_flag:
+        changes["red_flag_alerted"] = True
+    tools.set_state(conv, **changes)
+    t.db.commit()
     return payload

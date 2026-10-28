@@ -24,6 +24,24 @@ RED_FLAGS = re.compile(r"""
 EMERGENCY_911 = ("I'm so sorry, that sounds really frightening. Symptoms like these can get serious quickly, so "
                  "please call 911 or go to the nearest emergency room now, and please don't wait for a dental "
                  "appointment. I've also let our dental team know it's urgent, so they can follow up with you.\n\n")
+# The whole reply on a red-flag turn: no LLM call, so nothing can repeat or soften the advice.
+RED_FLAG_REPLY = EMERGENCY_911 + "Is someone with you right now?"
+
+# "That time has passed / is taken / isn't available": only a tool may say so. Live bug: the model
+# called a future slot "already passed" and never called book.
+NEGATIVE_CLAIM = re.compile(r"""
+    \b(un|no\ longer\ |not\ |isn'?t\ |aren'?t\ |wasn'?t\ |is\ no\ longer\ )(still\ )?(available|open|bookable|valid)\b
+  | \binvalid\b
+  | \b(has|have|had)\s+(already\s+)?passed\b | \balready\s+(passed|gone|over)\b | \bin\s+the\s+past\b
+  | \b(is|was|been|got|are|were)\s+(just\s+|already\s+)?(taken|filled|gone)\b
+  | \b(already|just)\s+(been\s+)?(taken|booked\ by|filled)\b
+  | \b(can'?t|cannot|unable\ to)\s+(be\s+)?book(ed)?\s+(that|this|it|those|these)\b
+""", re.I | re.X)
+
+
+def negative_claim(reply: str) -> bool:
+    """Does the reply say an offered time can't be had? The caller knows whether a tool said so."""
+    return bool(NEGATIVE_CLAIM.search(reply))
 
 # Claims that an action happened. Reading back an existing appointment ("you have a cleaning on...")
 # doesn't match; the system prompt steers the model to that phrasing.

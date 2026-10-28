@@ -136,3 +136,35 @@ def test_registration_claim_followed_by_slot_options_passes():
     reply = ("Thanks, Jordan, you're all set in our system. I searched from today and found these emergency "
              "openings:\n\nWednesday, November 4 at 10:30 AM\nThursday, November 5 at 8:00 AM\n\nWhich works?")
     assert guard.check_reply(reply, False, "s", registered=True) == reply
+
+
+@pytest.mark.parametrize("reply", [
+    "Unfortunately Monday, November 2 has already passed.",
+    "That time is no longer available.",
+    "Sorry, that slot isn't available anymore.",
+    "That appointment time was just taken by someone else.",
+    "I'm afraid that date is in the past.",
+    "That slot is unavailable.",
+    "Monday at 9:00 AM is not open.",
+    "That option is invalid, let me look again.",
+    "Sorry, I can't book that time for you.",
+    "Those times have already been taken.",
+])
+def test_negative_slot_claims(reply):
+    assert guard.negative_claim(reply)
+
+
+@pytest.mark.parametrize("reply", [
+    "Here are the times I found: Monday, November 2 at 9:00 AM.",
+    "Great choice! Want me to book Monday at 9:00 AM?",
+    "These times are available next week:",
+    "You're booked for Monday, November 2 at 9:00 AM.",
+    "Is that time still good for you?",
+    "Which of these works best for you?",
+    "I looked at Monday Nov 2 to Saturday Nov 7.",
+    "We're open Monday to Saturday, 8am to 6pm.",
+    "I'll book that for you now.",
+    "Would any of these open times work?",
+])
+def test_not_negative_slot_claims(reply):
+    assert not guard.negative_claim(reply)

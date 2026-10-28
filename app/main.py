@@ -92,6 +92,9 @@ class ChatIn(BaseModel):
     session_id: str = Field(pattern=SESSION_ID)
     message: str = Field(min_length=1, max_length=2000)
     turn: int | None = Field(None, ge=1, description="Client turn counter; a retried turn returns the original reply")
+    # A tapped quick reply: the option's ids. Only counts if it matches what this session was offered.
+    slot_ids: list[int] | None = Field(None, max_length=6)
+    patient_ids: list[int] | None = Field(None, max_length=6)
 
 
 class SessionIn(BaseModel):
@@ -131,7 +134,8 @@ def health():
 def chat(body: ChatIn) -> dict:
     try:
         with SessionLocal() as db:
-            return run_turn(db, body.session_id, body.message.strip(), body.turn)
+            return run_turn(db, body.session_id, body.message.strip(), body.turn,
+                            slot_ids=body.slot_ids, patient_ids=body.patient_ids)
     except Exception:
         # Never a stack trace or blank screen for the patient.
         log.exception("chat_failed session=%s", body.session_id)
