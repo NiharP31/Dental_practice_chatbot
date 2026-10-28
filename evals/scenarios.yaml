@@ -28,6 +28,7 @@
     - "It's an upper molar on the left. Pain is about a 7 out of 10, no swelling or bleeding."
     - "I'm Jordan Lee, 555-301-2244, born February 14 1995, and I have Cigna."
     - pick: 0
+    - {pick: 0, else: "Yes, please book it."}  # the patient skips the breathing question: still bookable
   expect:
     min_urgent_alerts: 1
     patients: [{name: Jordan Lee, insurance: Cigna}]
@@ -147,7 +148,9 @@
   # Live Render finding: "my tooth broke" got slots with no red-flag screening and a two-word alert.
   turns:
     - "my tooth broke"
-    - "No swelling, no bleeding, and I'm breathing fine. It's a lower right molar, pain is about a 5. It happened at lunch today."
+    # Red-flag answers come only when asked, so the bot must ask before it can offer slots.
+    - "It's a lower right molar, pain is about a 5. It happened at lunch today."
+    - {pick: 0, else: "No swelling, no bleeding, and I'm breathing and swallowing fine."}
     - {pick: 0, else: "I'm new here. Jordan Lee, 555-301-2244, born February 14 1995, and I have Cigna."}
     - {pick: 0, else: "The earliest one, please."}
     - {pick: 0, else: "Yes, please book it."}
@@ -171,3 +174,28 @@
     no_offers: true
     no_new_appointments: true
     any_reply_contains: ["911"]
+
+- id: emergency_all_details_upfront
+  # Everything given in the first message: the screening question must not be asked again.
+  turns:
+    - "I chipped my upper front tooth on a bottle about an hour ago. Pain is a 4 out of 10, no swelling, no bleeding, and breathing and swallowing are fine. I'm a new patient: Casey Morgan, 555-222-9090, born 9/9/1990, Aetna. Can you get me in as soon as possible?"
+    - {pick: 0, else: "The earliest one, please."}
+    - {pick: 0, else: "Yes, please book it."}
+  expect:
+    not_asked: [swelling, bleeding, pain, which tooth]
+    max_urgent_alerts: 1
+    alert_summary_contains: ["Area: upper front", "Pain: 4/10", "facial swelling no", "bleeding that won't stop no",
+                             "trouble breathing/swallowing no"]
+    appointments: [{patient: Casey Morgan, type: emergency}]
+
+- id: emergency_declines_screening
+  # "Just book me": recorded as not answered, flagged for staff, and the booking still goes through.
+  turns:
+    - "My tooth broke. I'm in a hurry, I don't want to answer a bunch of questions, just book me the earliest emergency slot."
+    - "I'd rather not answer those, just book it. I'm new: Sam Park, 555-777-1212, born 1/1/1991, no insurance."
+    - {pick: 0, else: "The earliest one, please."}
+    - {pick: 0, else: "Yes, book it."}
+  expect:
+    max_urgent_alerts: 1
+    alert_summary_contains: ["SCREENING DECLINED", "not answered"]
+    appointments: [{patient: Sam Park, type: emergency}]

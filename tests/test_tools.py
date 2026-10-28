@@ -413,4 +413,48 @@ def test_triage_without_an_early_alert_creates_one_and_flags_red(db):
     r = _triage(db, uncontrolled_bleeding=True, pain=None)
     [alert] = db.query(StaffAlert).all()
     assert alert.priority == "urgent" and alert.summary.startswith("RED FLAG")
-    assert "bleeding that won't stop YES" in alert.summary and "Pain: not given" in alert.summary
+    assert "bleeding that won't stop YES" in alert.summary and "Pain: not answered" in alert.summary
+
+
+def test_blank_answers_cannot_skip_screening(db):
+    """Claude eval regression: blanks without a decline unlocked emergency slots with no question asked."""
+    from app.tools import triage_emergency
+    add_day(db, THU)
+    with pytest.raises(ToolError) as e:
+        triage_emergency(db, "s1", what_happened="tooth broke", facial_swelling=None, uncontrolled_bleeding=None,
+                         trouble_breathing_or_swallowing=None)
+    assert e.value.code == "screening_incomplete"
+    with pytest.raises(ToolError):
+        find_slots(db, "emergency", "as soon as possible", now=NOW, session_id="s1")
+
+
+def test_skipping_a_question_twice_counts_as_declined_not_a_deadlock(db):
+    """Claude eval regression: the patient never answered the breathing question and nothing got booked."""
+    from app.tools import triage_emergency
+    add_day(db, THU)
+    args = dict(what_happened="cracked tooth", facial_swelling=False, uncontrolled_bleeding=False,
+                trouble_breathing_or_swallowing=None)
+    with pytest.raises(ToolError):
+        triage_emergency(db, "s1", **args)  # first time: ask once more
+    r = triage_emergency(db, "s1", **args)  # still unanswered: recorded as declined, booking allowed
+    assert r["declined"] and "trouble breathing/swallowing not answered" in r["summary"]
+    assert find_slots(db, "emergency", "as soon as possible", now=NOW, session_id="s1")["options"]
+
+
+def test_declined_screening_is_recorded_and_does_not_deadlock_booking(db):
+    from app.tools import triage_emergency
+    add_day(db, THU)
+    r = triage_emergency(db, "s1", what_happened="tooth broke", facial_swelling=None, uncontrolled_bleeding=None,
+                         trouble_breathing_or_swallowing=None, patient_declined=True)
+    assert r["declined"] and not r["red_flag"]
+    [alert] = db.query(StaffAlert).all()
+    assert alert.summary.startswith("SCREENING DECLINED")
+    assert "facial swelling not answered" in alert.summary and "Pain: not answered" in alert.summary
+    assert find_slots(db, "emergency", "as soon as possible", now=NOW, session_id="s1")["options"]
+
+
+def test_partial_answers_with_any_yes_is_still_a_red_flag(db):
+    from app.tools import triage_emergency
+    r = triage_emergency(db, "s1", what_happened="tooth broke", facial_swelling=None, uncontrolled_bleeding=True,
+                         trouble_breathing_or_swallowing=None)
+    assert r["red_flag"] and not r["declined"]

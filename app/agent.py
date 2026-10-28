@@ -59,14 +59,19 @@ class ModifyArgs(BaseModel):
     confirm: bool = Field(False, description="true only after the patient said yes to the read-back details")
 
 
+_UNANSWERED = "null if the patient didn't answer or declined"
+
+
 class TriageArgs(BaseModel):
+    """Fill from anything the patient said in the whole conversation, not just the last message."""
     what_happened: str = Field(description="What happened, in the patient's words")
-    when: str = Field(description="When it happened, as the patient said it")
-    area: str = Field(description="Which tooth or area of the mouth")
-    pain: int | None = Field(None, ge=0, le=10, description="Pain 0-10, if the patient gave one")
-    facial_swelling: bool
-    uncontrolled_bleeding: bool = Field(description="Bleeding that won't stop")
-    trouble_breathing_or_swallowing: bool
+    when: str = Field("", description="When it happened, as the patient said it; empty if not answered")
+    area: str = Field("", description="Which tooth or area of the mouth; empty if not answered")
+    pain: int | None = Field(None, ge=0, le=10, description=f"Pain 0-10; {_UNANSWERED}")
+    facial_swelling: bool | None = Field(description=_UNANSWERED)
+    uncontrolled_bleeding: bool | None = Field(description=f"Bleeding that won't stop; {_UNANSWERED}")
+    trouble_breathing_or_swallowing: bool | None = Field(description=_UNANSWERED)
+    patient_declined: bool = Field(False, description="true only if the patient said they won't answer the questions")
 
 
 class NotifyArgs(BaseModel):
@@ -146,6 +151,10 @@ def dispatch(t: Turn, name: str, raw_args: dict) -> dict:
         t.action_failed = True
     if name == "triage_emergency" and result.get("red_flag"):
         t.triage_red = True
+    if name == "triage_emergency":  # remember an incomplete screening so the next turn can't loop on it
+        pending = {"args": args, "turn": t.turn} if result.get("error") == "screening_incomplete" else None
+        tools.set_state(tools.get_conversation(t.db, t.session_id), pending_triage=pending)
+        t.db.commit()
     if name == "find_slots" and "options" in result:
         t.options = result["options"]
     if name == "book" and result.get("booked"):
@@ -186,6 +195,11 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
     text = f"<patient_message>\n{PATIENT_TAGS.sub('', text)}\n</patient_message>"
     # The clock rides on the user turn, not the system prompt, so the system prompt stays cacheable.
     text += clock_note(now)
+    pending = state.get("pending_triage")
+    if pending and pending["turn"] < turn and not red:
+        text += (NOTE_MARKER + " the red-flag question was already asked again once and is still unanswered. If "
+                 "this message doesn't answer it, don't ask again: call triage_emergency now with what you have, "
+                 "null for the rest and patient_declined=true, then carry on with booking.]")
     if red:
         text += (NOTE_MARKER + " red-flag symptoms detected. Your reply is shown right after a message that "
                  "already told the patient to call 911 / go to the ER and that staff were alerted as urgent. Don't "
@@ -211,6 +225,13 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
     except llm.LLMUnavailable:
         log.error("llm_unavailable session=%s", session_id)
     log.info("turn session=%s turn=%d providers=%s", session_id, turn, ",".join(answered_by) or "none")
+    if pending and pending["turn"] < turn and (conv.state or {}).get("pending_triage") == pending:
+        # Backstop: the model ignored the note and re-asked again. Record the gap ourselves so an
+        # emergency patient can always get booked; staff see "not answered" in the alert.
+        log.warning("screening_auto_declined session=%s", session_id)
+        tools.triage_emergency(db, session_id, **{**pending["args"], "patient_declined": True})
+        tools.set_state(conv, pending_triage=None)
+        db.commit()
 
     if not reply:
         reply = guard.canned_reply()

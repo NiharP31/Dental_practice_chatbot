@@ -354,20 +354,37 @@ def modify(db: Session, session_id: str, turn: int, appointment_id: int, action:
     return {"done": True, "action": action, "details": details}
 
 
-def triage_emergency(db: Session, session_id: str, what_happened: str, when: str, area: str,
-                     pain: int | None, facial_swelling: bool, uncontrolled_bleeding: bool,
-                     trouble_breathing_or_swallowing: bool) -> dict:
+def triage_emergency(db: Session, session_id: str, what_happened: str, when: str = "", area: str = "",
+                     pain: int | None = None, facial_swelling: bool | None = None,
+                     uncontrolled_bleeding: bool | None = None,
+                     trouble_breathing_or_swallowing: bool | None = None, patient_declined: bool = False) -> dict:
     """Record the emergency screening. Code, not the model, decides what a yes means: any red flag
-    routes to the 911 path. The summary (written by code, always complete) goes on the session's
-    urgent alert: the existing one is updated rather than a second alert created."""
-    red = facial_swelling or uncontrolled_bleeding or trouble_breathing_or_swallowing
-    yn = lambda b: "YES" if b else "no"  # noqa: E731
+    routes to the 911 path, even with other answers missing. None = not answered. Missing answers
+    unlock booking only when the patient declined ("just book me"); then they're recorded as SCREENING
+    DECLINED, so screening never deadlocks a booking but blanks can't be used to skip it.
+    The summary (written by code, always complete) goes on the session's urgent alert: the existing
+    one is updated rather than a second alert created."""
+    flags = (facial_swelling, uncontrolled_bleeding, trouble_breathing_or_swallowing)
+    red = any(f is True for f in flags)
+    missing = any(f is None for f in flags)
+    conv = get_conversation(db, session_id)
+    if missing and not red and not patient_declined:
+        if not (conv.state or {}).get("screening_reasked"):
+            set_state(conv, screening_reasked=True)
+            db.commit()
+            raise ToolError("screening_incomplete",
+                            "Some red-flag answers are missing. Ask only for the missing ones, once, in one short "
+                            "message. If the patient refuses or skips it, call again with patient_declined=true.")
+        # Asked twice and still unanswered: that's a decline. Never trap an emergency patient in a loop.
+        log.info("screening_skipped_twice session=%s", session_id)
+    declined = not red and missing
+    yn = lambda b: "not answered" if b is None else ("YES" if b else "no")  # noqa: E731
     summary = (("RED FLAG, told to call 911 / go to the ER. " if red else "")
-               + f"Dental emergency: {what_happened.strip() or 'not described'}. When: {when.strip() or 'not given'}. "
-               f"Area: {area.strip() or 'not given'}. Pain: {'not given' if pain is None else f'{pain}/10'}. "
+               + ("SCREENING DECLINED (patient didn't answer some red-flag questions). " if declined else "")
+               + f"Dental emergency: {what_happened.strip() or 'not described'}. When: {when.strip() or 'not answered'}. "
+               f"Area: {area.strip() or 'not answered'}. Pain: {'not answered' if pain is None else f'{pain}/10'}. "
                f"Screening: facial swelling {yn(facial_swelling)}; bleeding that won't stop {yn(uncontrolled_bleeding)}; "
                f"trouble breathing/swallowing {yn(trouble_breathing_or_swallowing)}.")
-    conv = get_conversation(db, session_id)
     alert = db.scalar(select(StaffAlert).where(StaffAlert.session_id == session_id, StaffAlert.priority == "urgent",
                                                StaffAlert.status == "open").order_by(StaffAlert.id.desc()).limit(1))
     if alert:
@@ -378,11 +395,16 @@ def triage_emergency(db: Session, session_id: str, what_happened: str, when: str
     else:
         set_state(conv, triage={"red_flag": red}, **({"red_flag_alerted": True} if red else {}))
         alert_id = notify_staff(db, session_id, "urgent", summary)["alert_id"]
-    return {"triaged": True, "red_flag": red, "alert_id": alert_id, "summary": summary,
-            "next": ("RED FLAG: the patient is shown 911/ER advice by our system. Don't repeat it, don't offer or "
-                     "book appointments; be calm and ask if someone is with them.") if red else
-                    ("Screening clear. Get their details (verify or register) and offer the soonest emergency "
-                     "slot; put the summary in the booking notes.")}
+    if red:
+        nxt = ("RED FLAG: the patient is shown 911/ER advice by our system. Don't repeat it, don't offer or "
+               "book appointments; be calm and ask if someone is with them.")
+    else:
+        nxt = (("Screening declined: don't ask again. Add one short line: if swelling, bleeding that won't stop "
+                "or trouble breathing starts, call 911. Then " if declined else "Screening clear. ")
+               + "get their details (verify or register) and offer the soonest emergency slot; put the summary "
+                 "in the booking notes.")
+    return {"triaged": True, "red_flag": red, "declined": declined, "alert_id": alert_id, "summary": summary,
+            "next": nxt}
 
 
 def notify_staff(db: Session, session_id: str, priority: str, summary: str) -> dict:

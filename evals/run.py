@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -95,6 +96,10 @@ def check(exp: dict, before: dict, after: dict, db, replies: list[str], offers: 
             fails.append(f"no urgent alert summary mentions {s!r}: {[a.summary for a in urgent]}")
     if exp.get("no_offers") and any(offers):
         fails.append(f"appointment times were offered: {[o for o in offers if o]}")
+    for s in exp.get("not_asked", []):  # info the patient already gave must not be asked for again
+        questions = [q for r in replies for q in re.split(r"(?<=[.!?])\s+|\n+", r) if q.rstrip().endswith("?")]
+        if hit := next((q for q in questions if s.lower() in q.lower()), None):
+            fails.append(f"asked about {s!r} again: {hit!r}")
     if s := exp.get("asked_before_offers"):  # e.g. the red-flag screening question comes before any slots
         asked = next((i for i, r in enumerate(replies) if s.lower() in r.lower()), None)
         offered = next((i for i, o in enumerate(offers) if o), None)

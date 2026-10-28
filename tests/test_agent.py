@@ -450,3 +450,20 @@ def test_llm_dies_after_an_urgent_alert_says_staff_know_and_gives_phone(db, scri
     queue += [call("notify_staff", priority="urgent", summary="Broken tooth"), llm.LLMUnavailable()]
     r = agent.run_turn(db, "sess-dead", "my tooth broke", now=NOW)
     assert "dental team has been alerted" in r["reply"] and "(555) 010-2200" in r["reply"] and "911" in r["reply"]
+
+
+def test_screening_cannot_loop_even_if_the_model_keeps_re_asking(db, script):
+    """Eval failure: the model re-asked the breathing question every turn without calling the tool."""
+    queue, seen = script
+    add_day(db, THU)
+    partial = dict(what_happened="cracked tooth", when="last night", area="upper left molar", pain=7,
+                   facial_swelling=False, uncontrolled_bleeding=False, trouble_breathing_or_swallowing=None)
+    queue += [call("triage_emergency", **partial), say("Any trouble breathing or swallowing?")]
+    agent.run_turn(db, "sess-loop", "upper left molar, pain 7, no swelling or bleeding", now=NOW)
+    queue.append(say("You didn't answer: any trouble breathing or swallowing?"))  # ignores the note
+    agent.run_turn(db, "sess-loop", "I'm Jordan Lee, 555-301-2244, born February 14 1995, Cigna", now=NOW)
+    assert "already asked again once" in seen[-1][-1]["text"]  # the model was told
+    [alert] = db.query(StaffAlert).all()  # ...and code recorded the decline anyway
+    assert alert.summary.startswith("SCREENING DECLINED") and "trouble breathing/swallowing not answered" in alert.summary
+    from app.tools import find_slots
+    assert find_slots(db, "emergency", "as soon as possible", now=NOW, session_id="sess-loop")["options"]
