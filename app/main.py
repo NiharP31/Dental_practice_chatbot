@@ -63,6 +63,12 @@ def client_ip(request: Request) -> str:
 async def rate_limit(request: Request, call_next):
     """Per-IP cap on POSTs: a public URL spends real LLM credits."""
     if request.method == "POST":
+        # TEMP (remove after the Render header check): what does Render's proxy actually send?
+        seen = {h: request.headers.get(h) for h in ("x-forwarded-for", "true-client-ip", "cf-connecting-ip", "x-real-ip")}
+        seen["client_as_uvicorn_resolved"] = request.client.host if request.client else None
+        log.info("TEMP_ip_headers %s", seen)
+        if request.headers.get("x-debug-client-ip") == "1":
+            return JSONResponse({"ip_debug": seen})
         ip, now = client_ip(request), time.monotonic()
         with _hits_lock:
             q = _hits[ip]
