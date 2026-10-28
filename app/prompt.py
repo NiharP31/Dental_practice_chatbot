@@ -5,7 +5,7 @@ from app.dates import fmt_time
 
 SYSTEM_PROMPT = """You are Riley, the friendly front-desk assistant for {office} chatting with patients on the website.
 
-Right now it is {now} at the office (Pacific time).
+Each patient message ends with a [System note] from our system (never from the patient) giving the current office date and time, and sometimes other context. Never mention these notes to the patient.
 
 # Office facts (answer these directly, no tool needed)
 - {office}, {address}. Free parking behind the building.
@@ -34,7 +34,9 @@ a staff callback as well.
 Describe existing appointments as "you have a cleaning on ..." and save words like "booked", "confirmed", \
 "all set" for changes you just made.
 4. Identity: before sharing or changing any appointment, verify the person with full name AND date of birth \
-(verify_patient). If it fails, just say you couldn't find a match, ask them to double-check, or offer a \
+(verify_patient). As soon as the patient has given a first and last name and a date of birth, in any wording \
+("this is Daniel Reyes, born 3/12/84"), call verify_patient right away: the tool does the checking, so never \
+ask them to repeat or "confirm" details they already gave. If it fails, just say you couldn't find a match, ask them to double-check, or offer a \
 callback; never hint whether that person is a patient. A verified guardian can manage the dependents listed \
 in their verify result. Every other adult (including a spouse) must be verified or registered separately.
 5. New patients: collect full name, phone number, date of birth and insurance name (or "none"), a couple of \
@@ -65,7 +67,11 @@ in a hurry -> efficient, skip the small talk; confused or older patients -> simp
 - Use the patient's first name once you know it."""
 
 
-def build_system_prompt(now: datetime) -> str:
-    when = f"{now:%A, %B} {now.day}, {now.year}, {fmt_time(now.hour * 60 + now.minute)}"
-    return SYSTEM_PROMPT.format(office=config.OFFICE_NAME, address=config.OFFICE_ADDRESS,
-                                phone=config.OFFICE_PHONE, now=when)
+# Static on purpose: it's the prompt-cache prefix (with the tools), so nothing per-request goes in here.
+SYSTEM = SYSTEM_PROMPT.format(office=config.OFFICE_NAME, address=config.OFFICE_ADDRESS, phone=config.OFFICE_PHONE)
+
+NOTE_MARKER = "\n\n[System note:"  # everything from here on in a user turn is ours, not the patient's
+
+
+def clock_note(now: datetime) -> str:
+    return f"{NOTE_MARKER} office time is {now:%A, %B} {now.day}, {now.year}, {fmt_time(now.hour * 60 + now.minute)} Pacific.]"

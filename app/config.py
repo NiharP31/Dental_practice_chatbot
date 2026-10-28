@@ -16,11 +16,12 @@ SLOT_LEN = timedelta(minutes=30)
 APPT_TYPES = ("cleaning", "checkup", "emergency")
 
 DATABASE_URL = os.getenv("DATABASE_URL") or "sqlite:///./dental.db"
+LLM_CHAIN = os.getenv("LLM_CHAIN") or "claude,gemini"  # order tried; providers without a key are skipped
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL") or "claude-haiku-5-5"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "")
+DAILY_LLM_BUDGET_USD = float(os.getenv("DAILY_LLM_BUDGET_USD") or 3)  # billed providers stop for the day past this
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 STAFF_TOKEN = os.getenv("STAFF_TOKEN", "")
 LLM_MAX_RPM = float(os.getenv("LLM_MAX_RPM") or 0)  # 0 = no client-side throttle

@@ -82,6 +82,21 @@ class Feedback(Base):
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
+class LlmUsage(Base):
+    """One row per LLM call: token counts and estimated cost, for the daily budget and cost metrics."""
+    __tablename__ = "llm_usage"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(index=True)  # office-local date
+    session_id: Mapped[str] = mapped_column(String(64), default="")
+    provider: Mapped[str] = mapped_column(String(80))
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(default=0)
+    cost_usd: Mapped[float] = mapped_column(default=0.0)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
 def make_engine(url: str):
     # Supabase hands out postgres:// URLs; SQLAlchemy needs the psycopg3 driver named.
     for prefix in ("postgres://", "postgresql://"):

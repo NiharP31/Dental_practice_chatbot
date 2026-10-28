@@ -21,7 +21,7 @@ def script(monkeypatch):
     """Queue of LLM responses; each may be a dict or a callable(history) -> dict / exception."""
     queue, seen = [], []
 
-    def fake_complete(system, history, tools):
+    def fake_complete(system, history, tools, db=None, session_id=""):
         seen.append(list(history))
         step = queue.pop(0)
         if isinstance(step, Exception):
@@ -137,24 +137,142 @@ def test_history_persists_across_requests(session_factory, script):
         assert len(db.get(Conversation, "sess-0010").messages) == 4
 
 
+class FakeProvider:
+    """Stands in for Claude/Gemini: pops scripted steps, records the history it was sent."""
+
+    def __init__(self, name, steps, billed=False, cost=0.0):
+        self.name, self.steps, self.billed, self.cost, self.seen = name, list(steps), billed, cost, []
+
+    def complete(self, system, history, tools):
+        self.seen.append([dict(m) for m in history])
+        step = self.steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return {**step, "usage": {"input": 100, "output": 10}, "cost_usd": self.cost}
+
+
 def test_provider_fallback_chain(monkeypatch):
-    class Boom:
-        name = "gemini"
-
-        def complete(self, *a):
-            raise RuntimeError("429 quota")
-
-    class Ok:
-        name = "deepseek"
-
-        def complete(self, *a):
-            return say("hello from fallback")
-
-    monkeypatch.setattr(llm, "_PROVIDERS", [Boom(), Ok()])
-    assert llm.complete("sys", [], [])["provider"] == "deepseek"
-    monkeypatch.setattr(llm, "_PROVIDERS", [Boom()])
+    claude = FakeProvider("claude:x", [RuntimeError("529 overloaded")], billed=True)
+    gemini = FakeProvider("gemini:y", [say("hello from fallback")])
+    monkeypatch.setattr(llm, "_PROVIDERS", [claude, gemini])
+    assert llm.complete("sys", [], [])["provider"] == "gemini:y"
+    monkeypatch.setattr(llm, "_PROVIDERS", [FakeProvider("claude:x", [RuntimeError("down")])])
     with pytest.raises(llm.LLMUnavailable):
         llm.complete("sys", [], [])
+
+
+def test_providers_without_keys_are_skipped(monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "LLM_CHAIN", "claude,gemini")
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "g-key")
+    monkeypatch.setattr(config, "GEMINI_MODEL", "gemini-3.5-flash-lite")
+    assert [p.name for p in llm.providers()] == ["gemini:gemini-3.5-flash-lite"]
+    monkeypatch.setattr(config, "LLM_CHAIN", "gemini")  # the "skip Claude" switch
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "a-key")
+    assert [p.name for p in llm.providers()] == ["gemini:gemini-3.5-flash-lite"]
+
+
+def _failover_turn(db, monkeypatch, first, second):
+    """`first` books (one tool call) and then dies; `second` must finish the same turn."""
+    ids = add_day(db, THU)
+    add_patient(db)
+    monkeypatch.setattr(llm, "_PROVIDERS", [first, second])
+    r = agent.run_turn(db, "sess-fail", "Daniel Reyes 1984-03-12, cleaning Thursday 9am", now=NOW)
+    return ids, r
+
+
+def test_claude_fails_mid_turn_and_gemini_finishes_from_stored_history(db, monkeypatch):
+    from google.genai import types
+    claude = FakeProvider("claude:haiku", [
+        {"role": "assistant", "text": "", "tool_calls": [
+            {"id": "toolu_01A", "name": "verify_patient", "args": {"full_name": "Daniel Reyes", "dob": "1984-03-12"}}]},
+        RuntimeError("529 overloaded")], billed=True)
+    gemini = FakeProvider("gemini:lite", [
+        {"role": "assistant", "text": "", "tool_calls": [
+            {"id": "g1", "name": "book", "args": {"patient_ids": [1], "slot_ids": [3], "appt_type": "cleaning"}, "sig": "c2ln"}]},
+        say("Booked for Thursday, October 29 at 9:00 AM.")])
+    ids, r = _failover_turn(db, monkeypatch, claude, gemini)
+    assert r["reply"] == "Booked for Thursday, October 29 at 9:00 AM." and db.query(Appointment).count() == 1
+    # Gemini picked up mid-turn: it saw Claude's tool call and the tool's result in the history.
+    handed_over = gemini.seen[0]
+    assert [m["role"] for m in handed_over] == ["user", "assistant", "tool"]
+    assert handed_over[1]["provider"] == "claude:haiku" and handed_over[2]["result"]["verified"]
+    # ...and the real Gemini adapter can encode that history (placeholder signature for Claude's call).
+    g = object.__new__(llm.Gemini)
+    g.types = types
+    contents = g._contents(handed_over)
+    assert contents[1].parts[0].thought_signature == llm.FOREIGN_CALL_SIGNATURE
+    stored = db.get(Conversation, "sess-fail").messages
+    assert [m.get("provider") for m in stored if m["role"] == "assistant"] == ["claude:haiku", "gemini:lite", "gemini:lite"]
+
+
+def test_gemini_fails_mid_turn_and_claude_finishes_from_stored_history(db, monkeypatch):
+    gemini = FakeProvider("gemini:lite", [
+        {"role": "assistant", "text": "", "tool_calls": [
+            {"id": "gem/1:x", "name": "verify_patient", "args": {"full_name": "Daniel Reyes", "dob": "1984-03-12"},
+             "sig": "c2ln"}]},
+        RuntimeError("503 UNAVAILABLE")])
+    claude = FakeProvider("claude:haiku", [say("You're verified, Daniel. When would you like to come in?")], billed=True)
+    _, r = _failover_turn(db, monkeypatch, gemini, claude)
+    assert r["reply"].startswith("You're verified")
+    handed_over = claude.seen[0]
+    # The real Claude adapter turns it into tool_use -> tool_result with the same (sanitized) id.
+    msgs = llm.Claude._messages(handed_over)
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    use, res = msgs[1]["content"][0], msgs[2]["content"][0]
+    assert use["type"] == "tool_use" and res["type"] == "tool_result"
+    assert use["id"] == res["tool_use_id"] == "gem_1_x"
+
+
+def test_claude_message_mapping_groups_results_and_flags_errors():
+    history = [{"role": "user", "text": "hi"},
+               {"role": "assistant", "text": "Checking.", "tool_calls": [
+                   {"id": "a", "name": "find_slots", "args": {"when": "tomorrow"}},
+                   {"id": "b", "name": "verify_patient", "args": {}}]},
+               {"role": "tool", "id": "a", "name": "find_slots", "result": {"options": []}},
+               {"role": "tool", "id": "b", "name": "verify_patient", "result": {"error": "bad_dob", "message": "x"}},
+               {"role": "assistant", "text": "Which day?", "tool_calls": []},
+               {"role": "user", "text": "friday"}]
+    msgs = llm.Claude._messages(history)
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user", "assistant", "user"]
+    assert [b["type"] for b in msgs[1]["content"]] == ["text", "tool_use", "tool_use"]
+    results = msgs[2]["content"]
+    assert [b["tool_use_id"] for b in results] == ["a", "b"] and results[1]["is_error"] and "is_error" not in results[0]
+
+
+def test_usage_is_recorded_and_budget_drops_claude_for_the_day(db, monkeypatch, caplog):
+    from app import config
+    from app.db import LlmUsage
+    monkeypatch.setattr(config, "DAILY_LLM_BUDGET_USD", 0.05)
+    monkeypatch.setattr(llm, "_budget_logged_day", [None])
+    claude = FakeProvider("claude:haiku", [say("one"), say("two")], billed=True, cost=0.03)
+    gemini = FakeProvider("gemini:lite", [say("three"), say("four")])
+    monkeypatch.setattr(llm, "_PROVIDERS", [claude, gemini])
+    assert llm.complete("s", [], [], db=db, session_id="sess-b")["provider"] == "claude:haiku"
+    assert llm.complete("s", [], [], db=db, session_id="sess-b")["provider"] == "claude:haiku"  # $0.06 now
+    with caplog.at_level("WARNING", logger="llm"):
+        assert llm.complete("s", [], [], db=db)["provider"] == "gemini:lite"
+        assert llm.complete("s", [], [], db=db)["provider"] == "gemini:lite"
+    assert len(claude.seen) == 2  # Claude not called once over budget
+    assert sum("llm_budget_exhausted" in r.message for r in caplog.records) == 1  # logged once per day
+    rows = db.query(LlmUsage).all()
+    assert len(rows) == 4 and round(sum(r.cost_usd for r in rows), 2) == 0.06 and rows[0].session_id == "sess-b"
+
+
+def test_turn_cap_per_session(db, script):
+    queue, seen = script
+    r = agent.run_turn(db, "sess-cap", "hello", turn=agent.MAX_TURNS + 1, now=NOW)
+    assert "start a new chat" in r["reply"] and not seen  # no LLM call spent
+
+
+def test_system_prompt_is_static_and_clock_rides_on_the_user_turn(db, script):
+    queue, seen = script
+    queue.append(say("Hi!"))
+    agent.run_turn(db, "sess-clock", "hello", now=NOW)
+    assert "Wednesday, October 28, 2026, 9:00 AM" in seen[0][-1]["text"]
+    from app.prompt import SYSTEM
+    assert "2026" not in SYSTEM and "{" not in SYSTEM
 
 
 def test_gemini_history_round_trips_signatures_and_groups_tool_results():

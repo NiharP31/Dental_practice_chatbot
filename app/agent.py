@@ -9,12 +9,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import config, guard, llm, tools
-from app.prompt import build_system_prompt
+from app.prompt import NOTE_MARKER, SYSTEM, clock_note
 
 log = logging.getLogger("agent")
 MAX_ROUNDS = 6
-HISTORY_TURNS = 20  # user turns of history sent to the model
-RED_FLAG_NOTE_MARKER = "\n\n[System note:"
+# Cost cap per session. Also why history is never trimmed: 30 turns fits easily in context, and an
+# append-only history keeps the prompt cache (and any provider's history checks) valid.
+MAX_TURNS = 30
+RED_FLAG_NOTE_MARKER = NOTE_MARKER
 ApptType = Literal["cleaning", "checkup", "emergency"]
 
 
@@ -131,11 +133,6 @@ def dispatch(t: Turn, name: str, raw_args: dict) -> dict:
     return result
 
 
-def _recent(history: list[dict]) -> list[dict]:
-    user_idx = [i for i, m in enumerate(history) if m["role"] == "user"]
-    return history[user_idx[-HISTORY_TURNS]:] if len(user_idx) > HISTORY_TURNS else history
-
-
 def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, now: datetime | None = None) -> dict:
     now = now or config.office_now()
     conv = tools.get_conversation(db, session_id)
@@ -144,25 +141,35 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
     if turn is not None and turn <= last and state.get("last_reply"):
         return state["last_reply"]  # client retried a turn we already answered
     turn = max(turn or 0, last + 1)
+    if turn > MAX_TURNS:
+        payload = {"reply": "We've covered a lot in this chat! To keep things easy to follow, please start a new chat "
+                            f"or call us at {config.OFFICE_PHONE} and our team will help.", "options": [], "turn": turn}
+        tools.set_state(conv, turn=turn, last_reply=payload)
+        db.commit()
+        return payload
     t = Turn(db, session_id, turn, now)
     history = list(conv.messages or [])
 
-    prefix = ""
-    if guard.red_flag(text):
+    prefix, red = "", guard.red_flag(text)
+    if red:
         prefix = guard.EMERGENCY_911
         if not state.get("red_flag_alerted"):
             tools.notify_staff(db, session_id, "urgent", f"RED FLAG symptoms reported in chat: {text[:500]}")
             tools.set_state(conv, red_flag_alerted=True)
-        text += (RED_FLAG_NOTE_MARKER + " red-flag symptoms detected. The patient has already been told to call 911 / go "
+    # The clock rides on the user turn, not the system prompt, so the system prompt stays cacheable.
+    text += clock_note(now)
+    if red:
+        text += (NOTE_MARKER + " red-flag symptoms detected. The patient has already been told to call 911 / go "
                  "to the ER and staff were alerted as urgent. Don't repeat the 911 advice; be calm and brief, ask "
                  "what happened if unclear, and offer the soonest emergency slot.]")
     history.append({"role": "user", "text": text})
 
-    system, specs, reply = build_system_prompt(now), tool_schemas(), None
+    specs, reply, answered_by = tool_schemas(), None, []
     try:
         for _ in range(MAX_ROUNDS):
-            msg = llm.complete(system, _recent(history), specs)
-            history.append({k: msg[k] for k in ("role", "text", "tool_calls")})
+            msg = llm.complete(SYSTEM, history, specs, db=db, session_id=session_id)
+            answered_by.append(msg.get("provider", "?"))
+            history.append({k: msg[k] for k in ("role", "text", "tool_calls", "provider") if k in msg})
             if not msg["tool_calls"]:
                 reply = msg["text"].strip()
                 break
@@ -173,6 +180,7 @@ def run_turn(db: Session, session_id: str, text: str, turn: int | None = None, n
             log.warning("max_rounds session=%s", session_id)
     except llm.LLMUnavailable:
         log.error("llm_unavailable session=%s", session_id)
+    log.info("turn session=%s turn=%d providers=%s", session_id, turn, ",".join(answered_by) or "none")
 
     if not reply:
         reply = guard.canned_reply()
