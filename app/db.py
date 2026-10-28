@@ -100,6 +100,11 @@ class LlmUsage(Base):
 
 
 def make_engine(url: str):
+    if url.startswith(("http://", "https://")):
+        # Easy mix-up: Supabase's project URL is for its REST API, not a database connection.
+        raise ValueError("DATABASE_URL is an http(s) URL. Use the Supabase *Transaction pooler* connection "
+                         "string instead (Connect > Connection string): postgresql://postgres.<ref>:<password>@"
+                         "aws-0-<region>.pooler.supabase.com:6543/postgres")
     # Supabase hands out postgres:// URLs; SQLAlchemy needs the psycopg3 driver named.
     for prefix in ("postgres://", "postgresql://"):
         if url.startswith(prefix):

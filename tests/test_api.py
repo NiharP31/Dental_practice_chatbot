@@ -136,3 +136,9 @@ def test_postgres_engine_is_set_up_for_supabase_transaction_pooler(monkeypatch):
     assert seen["connect_args"] == {"prepare_threshold": None, "sslmode": "require"}
     dbmod.make_engine("postgresql://postgres:postgres@localhost:55432/test")  # local docker: no TLS
     assert seen["connect_args"] == {"prepare_threshold": None}
+
+
+def test_supabase_project_url_is_rejected_with_a_clear_message():
+    from app.db import make_engine
+    with pytest.raises(ValueError, match="Transaction pooler"):
+        make_engine("https://abcdefgh.supabase.co")
