@@ -22,24 +22,42 @@ def test_per_ip_rate_limit(client, monkeypatch):
     assert client.get("/health").status_code == 200  # GETs aren't limited
 
 
-def test_rate_limit_keys_on_x_forwarded_for_behind_render(session_factory, monkeypatch):
-    """Production runs `uvicorn --proxy-headers --forwarded-allow-ips="*"`; this wraps the app in the
-    same uvicorn middleware those flags install, so the limiter sees what it sees on Render."""
-    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+# Header shapes recorded live on Render (Cloudflare in front) on 2026-10-28, with a spoofed X-Forwarded-For:
+REAL, CF_EDGE, RENDER_HOP = "73.241.213.202", "162.158.167.153", "10.31.179.45"
+SPOOFED_XFF = f"1.2.3.4,{REAL}, {CF_EDGE}, {RENDER_HOP}"
 
+
+def test_client_ip_ignores_spoofed_x_forwarded_for_and_uses_the_edge_header(client, monkeypatch):
     from app import config
-    monkeypatch.setattr(main, "SessionLocal", session_factory)
     monkeypatch.setattr(config, "RATE_LIMIT_PER_MIN", 2)
-    main._hits.clear()
-    behind_render = TestClient(ProxyHeadersMiddleware(main.app, trusted_hosts="*"))
     body = {"session_id": "sess-xff1", "rating": "up"}
 
-    def post(xff):
-        return behind_render.post("/feedback", json=body, headers={"X-Forwarded-For": xff}).status_code
+    def post(real_ip, xff):
+        return client.post("/feedback", json=body, headers={"True-Client-IP": real_ip, "X-Forwarded-For": xff}).status_code
 
-    assert [post("203.0.113.7"), post("203.0.113.7"), post("203.0.113.7")] == [200, 200, 429]
-    assert post("198.51.100.9") == 200  # a different patient behind the same Render proxy isn't blocked
-    assert set(main._hits) == {"203.0.113.7", "198.51.100.9"}  # keyed by client IP, not the proxy's
+    # The attacker rotates the leftmost X-Forwarded-For entry; the limiter still sees one client.
+    assert [post(REAL, f"1.2.3.{i},{REAL}, {CF_EDGE}, {RENDER_HOP}") for i in range(3)] == [200, 200, 429]
+    assert post("198.51.100.9", f"198.51.100.9, {CF_EDGE}, {RENDER_HOP}") == 200  # another patient, same edge
+    assert set(main._hits) == {REAL, "198.51.100.9"}  # not 1.2.3.x, and not Cloudflare's edge IP
+
+
+def test_client_ip_header_preference_and_fallbacks():
+    from starlette.requests import Request
+
+    def ip(headers, peer="10.31.179.45"):
+        scope = {"type": "http", "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+                 "client": (peer, 1234)}
+        return main.client_ip(Request(scope))
+
+    assert ip({"True-Client-IP": REAL, "CF-Connecting-IP": "9.9.9.9", "X-Forwarded-For": SPOOFED_XFF}) == REAL
+    assert ip({"CF-Connecting-IP": REAL, "X-Forwarded-For": SPOOFED_XFF}) == REAL
+    assert ip({"True-Client-IP": "not-an-ip", "CF-Connecting-IP": REAL}) == REAL  # garbage is skipped
+    assert ip({"X-Forwarded-For": SPOOFED_XFF}, peer="127.0.0.1") == "127.0.0.1"  # local dev: XFF never trusted
+
+
+def test_health_reports_deployed_commit(client, monkeypatch):
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "0123456789abcdef")
+    assert client.get("/health").json() == {"ok": True, "version": "0123456"}
 
 
 def test_feedback_thumbs_down_flags_conversation(client, session_factory):
@@ -94,7 +112,7 @@ def test_handoff_creates_normal_alert_with_context(client, session_factory):
 
 
 def test_health(client, monkeypatch):
-    assert client.get("/health").json() == {"ok": True}
+    assert client.get("/health").json()["ok"] is True
 
     def down():
         raise RuntimeError("db down")

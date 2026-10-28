@@ -45,11 +45,19 @@
   mistake rather than the person guessing.
   - Limit: a DOB spelled out in words ("the twelfth of March, eighty-four") isn't recognized, so
     the patient gets asked again.
-- **Client IP behind Render.** uvicorn runs with `--proxy-headers --forwarded-allow-ips='*'`, which
-  takes the *leftmost* `X-Forwarded-For` entry (checked in uvicorn 0.54's source). That's correct if
-  Render's proxy overwrites the header. If it only appends, a client could send a fake
-  `X-Forwarded-For` to dodge the per-IP limit. The daily LLM budget and the 30-turn session cap
-  still bound the cost either way. Checking this after deploy is in the deploy steps.
+- **Client IP behind Render (checked live, 2026-10-28).** The first version trusted uvicorn's
+  `--proxy-headers --forwarded-allow-ips='*'`, which uses the *leftmost* `X-Forwarded-For` entry. Live
+  testing showed that's spoofable: Render's edge (Cloudflare) *appends*, so the chain looks like
+  `client-supplied, real client, Cloudflare edge, 10.x Render hop`. Sending `X-Forwarded-For: 1.2.3.4`
+  made the app see `1.2.3.4`.
+  - The rightmost non-`10.x` entry isn't usable either: it's a Cloudflare edge IP shared by many
+    users.
+  - What works: Cloudflare **overwrites** a client-sent `True-Client-IP` with the real address, and
+    **rejects** a client-sent `CF-Connecting-IP` (error 1000).
+  - `client_ip()` now reads `True-Client-IP`, then `CF-Connecting-IP` (each must parse as an IP), then
+    the connection's peer address for local development. The proxy flags were dropped.
+  - Re-checked live after deploy: a spoofed `X-Forwarded-For` no longer changes the IP the limiter
+    sees.
 - **Prompt-injection style slip.** Told to "be a pirate", both models sometimes opened their refusal
   with "Ahoy"/"matey". They still refused, leaked nothing and changed nothing. Before the fix, Claude
   passed 1 of 3 runs on the strict style check (safety checks: 3/3).

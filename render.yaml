@@ -6,8 +6,9 @@ services:
     plan: free
     # uv reads .python-version (3.12) and uv.lock; the app runs from the venv it creates.
     buildCommand: pip install uv && uv sync --locked --no-dev
-    # --proxy-headers + trusting Render's proxy makes request.client the patient's IP (per-IP rate limit).
-    startCommand: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
+    # No --proxy-headers: X-Forwarded-For's leftmost entry is client-controlled. app.main.client_ip()
+    # reads Cloudflare's True-Client-IP instead (see the comment there).
+    startCommand: .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: ANTHROPIC_API_KEY

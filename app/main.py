@@ -1,4 +1,5 @@
 import hmac
+import ipaddress
 import logging
 import os
 import threading
@@ -53,22 +54,26 @@ _hits: dict[str, deque] = defaultdict(deque)
 _hits_lock = threading.Lock()
 
 
+# Render serves through Cloudflare. Checked live: Cloudflare overwrites a client-sent True-Client-IP
+# with the real address and rejects a client-sent CF-Connecting-IP outright, while X-Forwarded-For
+# keeps whatever the client put first (so its leftmost entry is spoofable, and its rightmost
+# non-10.x entry is a Cloudflare edge, not the patient).
+EDGE_IP_HEADERS = ("true-client-ip", "cf-connecting-ip")
+
+
 def client_ip(request: Request) -> str:
-    # On Render, uvicorn runs with --proxy-headers --forwarded-allow-ips="*", so request.client is
-    # already the address from X-Forwarded-For (its leftmost entry), not Render's proxy.
-    return request.client.host if request.client else "unknown"
+    for h in EDGE_IP_HEADERS:
+        try:
+            return str(ipaddress.ip_address(request.headers.get(h, "").strip()))
+        except ValueError:
+            continue
+    return request.client.host if request.client else "unknown"  # local dev: no edge in front
 
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
     """Per-IP cap on POSTs: a public URL spends real LLM credits."""
     if request.method == "POST":
-        # TEMP (remove after the Render header check): what does Render's proxy actually send?
-        seen = {h: request.headers.get(h) for h in ("x-forwarded-for", "true-client-ip", "cf-connecting-ip", "x-real-ip")}
-        seen["client_as_uvicorn_resolved"] = request.client.host if request.client else None
-        log.info("TEMP_ip_headers %s", seen)
-        if request.headers.get("x-debug-client-ip") == "1":
-            return JSONResponse({"ip_debug": seen})
         ip, now = client_ip(request), time.monotonic()
         with _hits_lock:
             q = _hits[ip]
@@ -110,13 +115,16 @@ def staff_page():
 
 @app.get("/health")
 def health():
+    # version: the deployed commit (Render sets RENDER_GIT_COMMIT), so a deploy can be confirmed
+    # with GET requests instead of anything that writes.
+    version = (os.getenv("RENDER_GIT_COMMIT") or "dev")[:7]
     try:
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))
-        return {"ok": True}
+        return {"ok": True, "version": version}
     except Exception:
         log.exception("health_db_failed")
-        return JSONResponse({"ok": False}, status_code=503)
+        return JSONResponse({"ok": False, "version": version}, status_code=503)
 
 
 @app.post("/chat")

@@ -140,6 +140,9 @@ CI. Style checks (persona slips, wording, tone) are reported only.
 - **Office-local times.** Simple for one office; multi-location needs UTC plus a timezone per office.
 - **DeepSeek dropped.** Its API is served from China. For health data, provider location and a BAA
   matter more than a third free fallback.
+- **Client IP behind Render.** The rate limiter reads `True-Client-IP`, which Render's Cloudflare edge
+  overwrites, instead of `X-Forwarded-For`, whose leftmost entry clients can fake. This was verified
+  live with spoofed headers.
 
 ## Prioritization & Scope Decisions
 
@@ -177,8 +180,6 @@ safety gates CI and style doesn't.
 - **One office, local time.**
 - **Lockout and rate limiting** are per session and per process.
 - **DOB format:** a DOB spelled out in words isn't recognized; the bot asks again.
-- **Client IP:** uvicorn trusts the leftmost `X-Forwarded-For` entry. Whether that's spoofable behind
-  Render's proxy hasn't been checked on the live service; the daily budget bounds the cost either way.
 - **One shared staff token.**
 
 More detail is in [NOTES.md](NOTES.md). The build history is in
