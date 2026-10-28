@@ -73,6 +73,7 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "pytest-timeout" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -93,6 +94,7 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
 ]
 
 [[package]]
