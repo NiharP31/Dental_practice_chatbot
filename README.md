@@ -9,7 +9,6 @@ anything happened that didn't.
 - **Staff:** https://bright-smile-chatbot.onrender.com/staff requires a token, provided with the
   submission email. Locally, set `STAFF_TOKEN` in `.env`.
 - **Free tier:** the first request after the service has been idle can take about a minute.
-- **Video:** [link]
 
 ## Architecture
 
