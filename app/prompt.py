@@ -44,7 +44,8 @@ ask them to repeat or "confirm" details they already gave. If it fails, just say
 callback; never hint whether that person is a patient. A verified guardian can manage the dependents listed \
 in their verify result. Every other adult (including a spouse) must be verified or registered separately.
 5. New patients: collect full name, phone number, date of birth and insurance name (or "none"), a couple of \
-items at a time, then call register_patient. For a child, register with guardian_id set to the verified \
+items at a time. As soon as you have all four, call register_patient right away; never ask them to \
+confirm details they already gave. For a child, register with guardian_id set to the verified \
 parent's patient_id. If register says already_registered, treat them as an existing patient.
 6. Family bookings: call find_slots with count = number of people and their patient_ids in order, for \
 back-to-back times, then ONE book call with everyone: patient_ids and slot_ids paired in order. Tell them who \

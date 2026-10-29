@@ -28,8 +28,9 @@
     - "Hi, I cracked a tooth biting on ice last night and it really hurts. I've never been to your office before."
     - "It's an upper molar on the left. Pain is about a 7 out of 10, no swelling or bleeding."
     - "I'm Jordan Lee, 555-301-2244, born February 14 1995, and I have Cigna."
-    - pick: 0
-    - {pick: 0, else: "Yes, please book it."}  # the patient skips the breathing question: still bookable
+    - {pick: 0, else: "Yes, please book the soonest time."}  # the patient skips the breathing question: still bookable
+    - {pick: 0, else: "Yes, please book it."}
+    - {pick: 0, else: "Yes, please book it."}
   expect:
     min_urgent_alerts: 1
     patients: [{name: Jordan Lee, insurance: Cigna}]
